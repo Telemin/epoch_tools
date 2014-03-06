@@ -5,11 +5,11 @@ import numpy as np
 
 def collect_data(filename):
   sdf_data = sdf.SDF(filename).read()
-  particle_data = np.vstack(
+  particle_data = np.vstack((
     sdf_data['Grid/Particles/subset_high_gamma/electron/X'],
     sdf_data['Grid/Particles/subset_high_gamma/electron/Y'],
     sdf_data['Particles/Px/subset_high_gamma/electron'],
-    sdf_data['Particles/ID/subset_high_gamma/electron'].astype(np.int64))
+    sdf_data['Particles/ID/subset_high_gamma/electron'].astype(np.int64)))
   particle_data = particle_data[:,particle_data[2].argsort()]
   return particle_data
     
