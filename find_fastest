@@ -1,5 +1,6 @@
 #!/usr/bin/env python2
 
+import matplotlib.pyplot as plt
 import sdf
 import numpy as np
 
@@ -17,7 +18,36 @@ def collect_data(filename):
 def main():
   particle_data = collect_data('0020.sdf')
   selected_particles = particle_data[:,-20:]
-  print(selected_particles[3].astype(np.int64))
+  
+  filedata = sdf.SDF('0020.sdf').read()
+  x = filedata['Grid/Grid/X']
+  y = filedata['Grid/Grid/Y']
+  dens = filedata['Derived/Number_Density'].transpose()
+  plt.figure()
+  ax = plt.gca()
+  im = ax.imshow(dens, vmin=1e24, vmax=1e26, extent=[x.min(), x.max(), y.min(), y.max()])
+  plt.scatter(particle_data[0],particle_data[1],color='k')
+  plt.show()
+
+  for particle in selected_particles[3].astype(np.int64):
+    print("begin:subset")
+    print("name = sub{0}".format(particle))
+    print("id_min = {0}".format(particle))
+    print("id_max = {0}".format(particle))
+    print("include_species:electron")
+    print("end:subset")
+    print("")
+    print("begin:output")
+    print("name = out{0}".format(particle))
+    print("dt_snapshot = output_timestep")
+    print("particles = sub{0}".format(particle))
+    print("px = sub{0}".format(particle))
+    print("py = sub{0}".format(particle))
+    print("pz = sub{0}".format(particle))
+    print("id = sub{0}".format(particle))
+    print("end:output")
+    print("")
+    
 
 if __name__ == "__main__":
   main()
