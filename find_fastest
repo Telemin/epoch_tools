@@ -1,5 +1,7 @@
 #!/usr/bin/env python2
 
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import sdf
 import numpy as np
@@ -17,7 +19,7 @@ def collect_data(filename):
 
 def main():
   particle_data = collect_data('0020.sdf')
-  selected_particles = particle_data[:,-20:]
+  selected_particles = particle_data[:,-15:]
   
   filedata = sdf.SDF('0020.sdf').read()
   x = filedata['Grid/Grid/X']
@@ -26,8 +28,8 @@ def main():
   plt.figure()
   ax = plt.gca()
   im = ax.imshow(dens, vmin=1e24, vmax=1e26, extent=[x.min(), x.max(), y.min(), y.max()])
-  plt.scatter(particle_data[0],particle_data[1],color='k')
-  plt.show()
+  plt.scatter(selected_particles[0],selected_particles[1],color='k')
+  plt.savefig('selected_particles')
 
   for particle in selected_particles[3].astype(np.int64):
     print("begin:subset")
@@ -37,17 +39,48 @@ def main():
     print("include_species:electron")
     print("end:subset")
     print("")
-    print("begin:output")
-    print("name = out{0}".format(particle))
-    print("dt_snapshot = output_timestep")
-    print("particles = sub{0}".format(particle))
-    print("px = sub{0}".format(particle))
-    print("py = sub{0}".format(particle))
-    print("pz = sub{0}".format(particle))
-    print("id = sub{0}".format(particle))
-    print("end:output")
-    print("")
-    
+   
+  subsets = " + ".join([ "sub{0}".format(a) for a in selected_particles[3].astype(np.int64)])
+
+  print("begin:output")
+  print("")
+  print("dt_snapshot = output_timestep")
+  print("force_first_to_be_restartable = T")
+  print("full_dump_every = output_full_freq")
+  print("restart_dump_every = output_restart_freq")
+  print("")
+  print("particles = restart + {0}".format(subsets))
+  print("px = restart + {0}".format(subsets))
+  print("py = restart + {0}".format(subsets))
+  print("pz = restart + {0}".format(subsets))
+  print("vx = restart")
+  print("vy = restart")
+  print("vz = restart")
+  print("id = restart + {0}".format(subsets))
+  print("charge = restart")
+  print("mass = restart")
+  print("particle_weight = restart")
+  print("")
+
+  print("grid = always")
+  print("ex = always")
+  print("ey = always")
+  print("ez = always")
+  print("bx = always")
+  print("by = always")
+  print("bz = always")
+  print("jx = always")
+  print("jy = always")
+  print("ekbar = always + species")
+  print("mass_density = restart")
+  print("charge_density = always + species")
+  print("number_density = always + species")
+  print("temperature = always + species")
+  print("")
+  print("distribution_functions = restart")
+  print("particle_probes = never")
+  print("end:output")
+  
 
 if __name__ == "__main__":
   main()
