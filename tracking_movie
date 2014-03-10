@@ -11,6 +11,7 @@ from distutils import spawn
 
 import matplotlib
 matplotlib.use('Agg')  
+from matplotlib import pylab
 from matplotlib.colors import LogNorm
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 import matplotlib.pyplot as plt
@@ -33,14 +34,20 @@ def main():
     return 1
   sdf_list = [f for f in os.listdir(os.getcwd()) if f.endswith('.sdf')]
   worker_pool = mp.Pool(processes=mp.cpu_count())
-  particle_data = worker_pool.map(process_file, sdf_list)
+  #particle_data = worker_pool.map(process_file, sdf_list)
+  particle_data = map(process_file, sdf_list)
   particle_tracks = [np.hstack([point[part] for point in particle_data ])
     for part in particle_list]
   for a in range(0,len(particle_tracks)):
     particle_tracks[a] = particle_tracks[a][:,particle_tracks[a][0].argsort()]
+    particle_tracks[a][0] *= 1E-6
+    particle_tracks[a][1] *= 1E-6
+    particle_tracks[a][2] *= 1.871157E21
+
   shared_data.append(particle_tracks)
 
-  worker_pool.map(mkimage, sdf_list)
+  #worker_pool.map(mkimage, sdf_list)
+  map(mkimage, sdf_list)
   if spawn.find_executable('avconv'):
     converter = spawn.find_executable('avconv')
   elif spawn.find_executable('ffmpeg'):
@@ -84,11 +91,21 @@ def mkimage(filename):
         sdf_data['Grid/Particles/subset_{0}/electron/Y'.format(subset)],
         sdf_data['Particles/Px/subset_{0}/electron'.format(subset)],
         sdf_data['Particles/ID/subset_{0}/electron'.format(subset)])))
-  
-  x = sdf_data['Grid/Grid/X']
-  y = sdf_data['Grid/Grid/Y']
+  for a in range(0,len(particle_position)):
+    particle_position[a][0] *= 1E-6
+    particle_position[a][1] *= 1E-6
+    particle_position[a][2] *= 1.871157E21
+
+ 
+  x = sdf_data['Grid/Grid/X'].copy()
+  y = sdf_data['Grid/Grid/Y'].copy()
   dens = sdf_data['Derived/Number_Density'].transpose()
-  fig, ax = plt.subplots(2)
+  x *= 1E-6
+  y *= 1E-6
+  fig = plt.figure(0)
+  ax = []
+  ax.append(plt.subplot2grid((2,3), (0,0), colspan=3))
+  ax.append(plt.subplot2grid((2,3), (1,0), colspan=2))
   xmax, ymax = (0.0, 0.0)
   particle_tracks = shared_data[0]
   for a in range(0,len(particle_tracks)):
@@ -98,6 +115,10 @@ def mkimage(filename):
   
   ax[0].set_xlim(0,xmax)
   ax[0].set_ylim(0,ymax)
+  ax[0].set_xlabel("x / um")
+  ax[0].set_ylabel("px / MeV/c")
+  ax[1].set_xlabel("x / um")
+  ax[1].set_ylabel("x / um")
  
   im = ax[1].imshow(dens, vmin=1e24, vmax=1e26, extent=[x.min(), x.max(), y.min(), y.max()])
   for particle in particle_position:
