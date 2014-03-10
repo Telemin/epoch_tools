@@ -1,0 +1,54 @@
+#!/usr/bin/env python2
+
+import matplotlib
+matplotlib.use('Agg') #ensure we support headless mpl
+import matplotlib.pyplot as plt
+import sdf
+import numpy as np
+import multiprocessing as mp
+import re
+import os
+
+match_subset = re.compile("Particles/ID/subset_(?P<subset>.*)/electron")
+
+def process_file(filename):
+  sdf_data = sdf.SDF(filename).read()
+  particle_position = dict()
+  for current_key in sdf_data.keys():
+    search_result = match_subset.search(current_key)  
+    if search_result:
+      subset = search_result.group('subset')
+      particle_position[subset] = np.vstack((
+        sdf_data['Grid/Particles/subset_{0}/electron/X'.format(subset)],
+        sdf_data['Grid/Particles/subset_{0}/electron/Y'.format(subset)],
+        sdf_data['Particles/Px/subset_{0}/electron'.format(subset)],
+        sdf_data['Particles/ID/subset_{0}/electron'.format(subset)]))
+  return particle_position
+
+
+
+def main():
+  particle_list = process_file('0000.sdf').keys()
+  if len(particle_list) < 1:
+    print("No particle tracks found in this database")
+    return 1
+  sdf_list = [f for f in os.listdir(os.getcwd()) if f.endswith('.sdf')]
+  worker_pool = mp.Pool(processes=mp.cpu_count())
+  particle_data = worker_pool.map(process_file, sdf_list)
+  particle_tracks = [np.hstack([point[part] for point in particle_data ])
+    for part in particle_list]
+  
+  fig, ax = plt.subplots()
+  xmax, ymax = (0.0, 0.0)
+  for a in range(0,len(particle_tracks)):
+    particle_tracks[a] = particle_tracks[a][:,particle_tracks[a][0].argsort()]
+    ax.plot(particle_tracks[a][0],particle_tracks[a][2])
+    xmax = xmax if particle_tracks[a][0].max() < xmax else particle_tracks[a][0].max()
+    ymax = ymax if particle_tracks[a][2].max() < ymax else particle_tracks[a][2].max()
+ 
+  ax.set_xlim(0,xmax)
+  ax.set_ylim(0,ymax)
+  fig.savefig('track')
+
+if __name__ == "__main__":
+  main()
