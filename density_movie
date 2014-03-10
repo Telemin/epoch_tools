@@ -7,6 +7,7 @@ from mpl_toolkits.axes_grid1 import make_axes_locatable
 import matplotlib.pyplot as plt
 import numpy as np
 import sdf
+import multiprocessing as mp
 import os
 from distutils import spawn
 
@@ -17,9 +18,9 @@ def main():
   except:
     print('movie directory already exists, will not overwrite')
     exit()
-  for f in os.listdir(os.getcwd()):
-    if f.endswith('.sdf'):
-      mkimage(f)
+  sdf_list = [f for f in os.listdir(os.getcwd()) if f.endswith('.sdf')]
+  worker_pool = mp.Pool(processes=mp.cpu_count())
+  worker_pool.map(mkimage, sdf_list)
   if spawn.find_executable('avconv'):
     converter = spawn.find_executable('avconv')
   elif spawn.find_executable('ffmpeg'):
