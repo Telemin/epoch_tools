@@ -40,8 +40,8 @@ def main():
     for part in particle_list]
   for a in range(0,len(particle_tracks)):
     particle_tracks[a] = particle_tracks[a][:,particle_tracks[a][0].argsort()]
-    particle_tracks[a][0] *= 1E-6
-    particle_tracks[a][1] *= 1E-6
+    particle_tracks[a][0] /= 1E-6
+    particle_tracks[a][1] /= 1E-6
     particle_tracks[a][2] *= 1.871157E21
 
   shared_data.append(particle_tracks)
@@ -92,20 +92,23 @@ def mkimage(filename):
         sdf_data['Particles/Px/subset_{0}/electron'.format(subset)],
         sdf_data['Particles/ID/subset_{0}/electron'.format(subset)])))
   for a in range(0,len(particle_position)):
-    particle_position[a][0] *= 1E-6
-    particle_position[a][1] *= 1E-6
+    particle_position[a][0] /= 1E-6
+    particle_position[a][1] /= 1E-6
     particle_position[a][2] *= 1.871157E21
 
  
   x = sdf_data['Grid/Grid/X'].copy()
   y = sdf_data['Grid/Grid/Y'].copy()
+  #part_x = sdf_data['Grid/Particles/subset_rnd_frac/electron/X']
+  #part_y = sdf_data['/Particles/Px/subset_rnd_frac/electron']
   dens = sdf_data['Derived/Number_Density'].transpose()
-  x *= 1E-6
-  y *= 1E-6
+  x /= 1E-6
+  y /= 1E-6
   fig = plt.figure(0)
   ax = []
   ax.append(plt.subplot2grid((2,3), (0,0), colspan=3))
   ax.append(plt.subplot2grid((2,3), (1,0), colspan=2))
+  ax.append(plt.subplot2grid((2,3), (1,2), colspan=1))
   xmax, ymax = (0.0, 0.0)
   particle_tracks = shared_data[0]
   for a in range(0,len(particle_tracks)):
