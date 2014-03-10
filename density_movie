@@ -9,6 +9,7 @@ import numpy as np
 import sdf
 import multiprocessing as mp
 import os
+import shutil
 from distutils import spawn
 
 def main():
@@ -34,7 +35,7 @@ def main():
               '-r', '30', '-pix_fmt', 'yuv420p', 
               ''.join((os.path.basename(os.getcwd()),'.mp4'))]
   spawn.spawn(conv_args)
-
+  shutil.rmtree('movie')
 
 def mkimage(filename):
 
