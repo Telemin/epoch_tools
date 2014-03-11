@@ -91,19 +91,35 @@ def mkimage(filename):
         sdf_data['Grid/Particles/subset_{0}/electron/Y'.format(subset)],
         sdf_data['Particles/Px/subset_{0}/electron'.format(subset)],
         sdf_data['Particles/ID/subset_{0}/electron'.format(subset)])))
-  for a in range(0,len(particle_position)):
-    particle_position[a][0] /= 1E-6
-    particle_position[a][1] /= 1E-6
-    particle_position[a][2] *= 1.871157E21
-
  
   x = sdf_data['Grid/Grid/X'].copy()
   y = sdf_data['Grid/Grid/Y'].copy()
-  #part_x = sdf_data['Grid/Particles/subset_rnd_frac/electron/X']
-  #part_y = sdf_data['/Particles/Px/subset_rnd_frac/electron']
   dens = sdf_data['Derived/Number_Density'].transpose()
-  x /= 1E-6
-  y /= 1E-6
+  
+  phase_space = True
+  try:
+    part_x = sdf_data['Grid/Particles/subset_rnd_frac/electron/X']
+    part_px = sdf_data['Particles/Px/subset_rnd_frac/electron']
+  except KeyError:
+    phase_space = False
+
+
+
+## Put things into units we are used to:
+  for a in range(0,len(particle_position)):
+    particle_position[a][0] * 1E-6
+    particle_position[a][1] * 1E-6
+    particle_position[a][2] *= 1.871157E21
+
+  x *= 1E6
+  y *= 1E6
+  dens *= 1E-4
+
+  if phase_space:
+    part_x *= 1E6
+    part_px *= 1.871157E21
+    
+  
   fig = plt.figure(0)
   ax = []
   ax.append(plt.subplot2grid((2,3), (0,0), colspan=3))
@@ -116,20 +132,29 @@ def mkimage(filename):
     xmax = xmax if particle_tracks[a][0].max() < xmax else particle_tracks[a][0].max()
     ymax = ymax if particle_tracks[a][2].max() < ymax else particle_tracks[a][2].max()
   
+  im = ax[1].imshow(dens, vmin=1e24, vmax=1e26, extent=[x.min(), x.max(), y.min(), y.max()])
+    for particle in particle_position:
+      ax[0].scatter(particle[0],particle[2],color='k')
+      ax[1].scatter(particle[0],particle[1],color='k')
+    divider = make_axes_locatable(ax[1])
+    cax = divider.append_axes('right', size='5%', pad=0.05)
+    plt.colorbar(im, cax=cax)
+
+  ax[2].plot(part_x,part_px,'k,')
+
+## Label axes, set limits
   ax[0].set_xlim(0,xmax)
   ax[0].set_ylim(0,ymax)
   ax[0].set_xlabel("x / um")
   ax[0].set_ylabel("px / MeV/c")
   ax[1].set_xlabel("x / um")
   ax[1].set_ylabel("x / um")
- 
-  im = ax[1].imshow(dens, vmin=1e24, vmax=1e26, extent=[x.min(), x.max(), y.min(), y.max()])
-  for particle in particle_position:
-    ax[0].scatter(particle[0],particle[2],color='k')
-    ax[1].scatter(particle[0],particle[1],color='k')
-  divider = make_axes_locatable(ax[1])
-  cax = divider.append_axes('right', size='5%', pad=0.05)
-  plt.colorbar(im, cax=cax)
+  ax[2].set_xlim(x.min(),x.max())
+  ax[2].set_ylim(0,ymax)
+  ax[2].set_xlabel("x / um")
+  ax[2].set_ylabel("px / MeV/c")
+
+
   x_px = 1920
   y_px = 1080
   y_size=10
