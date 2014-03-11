@@ -18,10 +18,11 @@ def collect_data(filename):
     
 
 def main():
-  particle_data = collect_data('0020.sdf')
+  data_file = '0007.sdf'
+  particle_data = collect_data(data_file)
   selected_particles = particle_data[:,-15:]
   
-  filedata = sdf.SDF('0020.sdf').read()
+  filedata = sdf.SDF(data_file).read()
   x = filedata['Grid/Grid/X']
   y = filedata['Grid/Grid/Y']
   dens = filedata['Derived/Number_Density'].transpose()
