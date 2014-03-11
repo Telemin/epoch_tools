@@ -34,10 +34,21 @@ def main():
     return 1
   sdf_list = [f for f in os.listdir(os.getcwd()) if f.endswith('.sdf')]
   worker_pool = mp.Pool(processes=mp.cpu_count())
-  #particle_data = worker_pool.map(process_file, sdf_list)
-  particle_data = map(process_file, sdf_list)
-  particle_tracks = [np.hstack([point[part] for point in particle_data ])
-    for part in particle_list]
+  particle_data = worker_pool.map(process_file, sdf_list)
+  #particle_data = map(process_file, sdf_list)
+  #particle_tracks = [np.hstack([point[part] for point in particle_data ])
+  #  for part in particle_list]
+  particle_tracks  = []
+  for part in particle_list:
+    count = 0
+    temp = []
+    for point in particle_data:
+      try:
+        temp.append(point[part])
+      except KeyError:
+        pass
+    particle_tracks.append(np.hstack(temp))
+
   for a in range(0,len(particle_tracks)):
     particle_tracks[a] = particle_tracks[a][:,particle_tracks[a][0].argsort()]
     particle_tracks[a][0] /= 1E-6
@@ -46,8 +57,8 @@ def main():
 
   shared_data.append(particle_tracks)
 
-  #worker_pool.map(mkimage, sdf_list)
-  map(mkimage, sdf_list)
+  worker_pool.map(mkimage, sdf_list)
+  #map(mkimage, sdf_list)
   if spawn.find_executable('avconv'):
     converter = spawn.find_executable('avconv')
   elif spawn.find_executable('ffmpeg'):
