@@ -1,0 +1,40 @@
+#!/usr/bin/env python2
+
+import sdf
+import re
+import os
+import shutil
+import numpy as np
+import multiprocessing as mp
+from multiprocessing import Manager
+from distutils import spawn
+
+import matplotlib
+#matplotlib.use('Agg')  
+from matplotlib import pylab
+from matplotlib.colors import LogNorm
+from mpl_toolkits.axes_grid1 import make_axes_locatable
+import matplotlib.pyplot as plt
+
+def main():
+  sdf_list = [f for f in os.listdir(os.getcwd()) if f.endswith('.sdf')]
+  worker_pool = mp.Pool(processes=mp.cpu_count())
+  particle_data = np.asarray(worker_pool.map(laser_fundamental, sdf_list)).transpose()
+  print(particle_data.shape)
+  particle_data = particle_data[:,np.argsort(particle_data[0])]
+  plt.plot(particle_data[0], particle_data[1])
+  plt.show()
+  
+
+def laser_fundamental(filename):
+  sdf_data = sdf.SDF(filename).read()
+  X = sdf_data['Grid/Grid/X']
+  Ey = sdf_data['Electric Field/Ey']
+  Ey = Ey[:,int(Ey.shape[-1]/2)]
+  fourier = np.fft.rfft(Ey)
+  freq = np.fft.rfftfreq(len(X),abs(X[1]-X[0]))
+  fundamental = freq[np.argsort(fourier)[-1]]
+  return (sdf_data['Header']['time'],fundamental)
+  
+if __name__ == '__main__':
+  main()
