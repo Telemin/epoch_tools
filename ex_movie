@@ -1,0 +1,63 @@
+#!/usr/bin/env python2
+
+import matplotlib
+matplotlib.use('Agg')  
+from matplotlib.colors import LogNorm
+from mpl_toolkits.axes_grid1 import make_axes_locatable
+import matplotlib.pyplot as plt
+import numpy as np
+import sdf
+import multiprocessing as mp
+import os
+import shutil
+from distutils import spawn
+
+def main():
+
+  try:
+    os.mkdir('movie')
+  except:
+    print('movie directory already exists, will not overwrite')
+    exit()
+  sdf_list = [f for f in os.listdir(os.getcwd()) if f.endswith('.sdf')]
+  worker_pool = mp.Pool(processes=mp.cpu_count())
+  worker_pool.map(mkimage, sdf_list)
+  if spawn.find_executable('avconv'):
+    converter = spawn.find_executable('avconv')
+  elif spawn.find_executable('ffmpeg'):
+    converter = spawn.find_executable('ffmpeg')
+  else:
+    print("Couldn't find ffmpeg/avconv :(\n"
+          "you're on your own for making the movie")
+    os.exit(1)
+
+  conv_args = [converter,'-r', '1', '-i', 'movie/%04d.png', '-c:v', 'libx264',
+              '-r', '30', '-pix_fmt', 'yuv420p', 
+              ''.join((os.path.basename(os.getcwd()),'_ex.mp4'))]
+  spawn.spawn(conv_args)
+  shutil.rmtree('movie')
+
+def mkimage(filename):
+
+  filedata = sdf.SDF(filename).read()
+  x = filedata['Grid/Grid/X']
+  y = filedata['Grid/Grid/Y']
+  dens = filedata['Electric Field/Ex'].transpose()
+  plt.figure()
+  ax = plt.gca()
+  im = ax.imshow(dens, vmin=-2e12, vmax=2e12, extent=[x.min(), x.max(), y.min(), y.max()])
+  divider = make_axes_locatable(ax)
+  cax = divider.append_axes('right', size='5%', pad=0.05)
+  plt.colorbar(im, cax=cax)
+  x_px = 1920
+  y_px = 1080
+  y_size=10
+  x_size=y_size*x_px / y_px
+  plt.gcf().set_size_inches(x_size,y_size)
+  savepath = os.path.join('movie',(filename[:-4]))
+  print(savepath)
+  plt.savefig(savepath,dpi=x_px/x_size)
+  plt.close()
+  
+if __name__ == '__main__':
+  main()
