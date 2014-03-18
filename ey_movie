@@ -43,10 +43,17 @@ def mkimage(filename):
   x = filedata['Grid/Grid/X']
   y = filedata['Grid/Grid/Y']
   dens = filedata['Electric Field/Ey'].transpose()
-  plt.figure()
-  ax = plt.gca()
-  im = ax.imshow(dens, vmin=-2e13, vmax=2e13, extent=[x.min(), x.max(), y.min(), y.max()])
-  divider = make_axes_locatable(ax)
+  fig = plt.figure()
+  ax = []
+  ax.append(plt.subplot2grid((2,1), (0,0)))
+  ax.append(plt.subplot2grid((2,1), (1,0)))
+  ymin_loc = np.abs(y).argmin()
+  lineout_dens = dens[ymin_loc]
+  print(x.shape)
+  print(lineout_dens.shape)
+  ax[0].plot(x, lineout_dens)
+  im = ax[1].imshow(dens, vmin=-2e13, vmax=2e13, extent=[x.min(), x.max(), y.min(), y.max()])
+  divider = make_axes_locatable(ax[1])
   cax = divider.append_axes('right', size='5%', pad=0.05)
   plt.colorbar(im, cax=cax)
   x_px = 1920
