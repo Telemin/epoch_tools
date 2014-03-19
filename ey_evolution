@@ -1,10 +1,12 @@
 #!/usr/bin/env python2
 
 import matplotlib
+matplotlib.use('Agg')
 from matplotlib.colors import LogNorm
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 import matplotlib.pyplot as plt
 import numpy as np
+from scipy import signal as ns
 import sdf
 import multiprocessing as mp
 import os
@@ -13,22 +15,45 @@ from distutils import spawn
 
 def scan_sdf(filename):
   sdf_data = sdf.SDF(filename).read()
-  time = sdf_data['Header']['time']
-  ey_max = sdf_data['Electric Field/Ey'].max()
-  return (time, ey_max)
+  time = sdf_data['Header']['time'] * 3e8 * 6158
+  x = sdf_data['Grid/Grid/X'].copy()
+  x *= 6158
+
+  x_size, y_size = sdf_data['Electric Field/Ey'].shape
+  print((x_size,y_size))
+  ex_on_axis = sdf_data['Electric Field/Ex'][:,int(0.5*y_size)]
+  ey_on_axis = sdf_data['Electric Field/Ey'][:,int(0.5*y_size)]
+  ex_envelope = np.abs(ns.hilbert(ex_on_axis))
+  ey_envelope = np.abs(ns.hilbert(ey_on_axis))
+  print(ey_envelope.shape)
+
+  fig = plt.figure()
+  ax = []
+  ax.append(plt.subplot2grid((2,1),(0,0)))
+  ax.append(plt.subplot2grid((2,1),(1,0)))
+  ax[0].plot(x,ex_on_axis,x,ex_envelope)
+  ax[1].plot(x,ey_on_axis,x,ey_envelope)
+  plt.savefig(filename[:-4])
+  plt.close()
+
+  ex_max = ex_on_axis.max()
+  ex_env_max = ex_envelope.max()
+  ey_max = ey_on_axis.max()
+  ey_env_max = ey_envelope.max()
+  return (time, ex_max, ex_env_max, ey_max, ey_env_max)
 
 def main():
   sdf_list = [f for f in os.listdir(os.getcwd()) if f.endswith('.sdf')]
   worker_pool = mp.Pool(processes=mp.cpu_count())
   output_data = np.asarray(worker_pool.map(scan_sdf, sdf_list)).transpose()
   output_data = output_data[:,np.argsort(output_data[0])]
-  print(output_data)
-
   fig = plt.figure()
   ax = []
-  ax.append(plt.subplot2grid((1,1),(0,0)))
+  ax.append(plt.subplot2grid((2,1),(0,0)))
+  ax.append(plt.subplot2grid((2,1),(1,0)))
 
-  ax[0].plot(output_data[0], output_data[1])
+  ax[0].plot(output_data[0], output_data[1], output_data[0], output_data[2])
+  ax[1].plot(output_data[0], output_data[3], output_data[0], output_data[4])
 
   plt.savefig('ey_evolution')
   plt.close()
