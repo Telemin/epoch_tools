@@ -1,0 +1,37 @@
+#!/usr/bin/env python2
+
+import matplotlib
+from matplotlib.colors import LogNorm
+from mpl_toolkits.axes_grid1 import make_axes_locatable
+import matplotlib.pyplot as plt
+import numpy as np
+import sdf
+import multiprocessing as mp
+import os
+import shutil
+from distutils import spawn
+
+def scan_sdf(filename):
+  sdf_data = sdf.SDF(filename).read()
+  time = sdf_data['Header']['time']
+  ey_max = sdf_data['Electric Field/Ey'].max()
+  return (time, ey_max)
+
+def main():
+  sdf_list = [f for f in os.listdir(os.getcwd()) if f.endswith('.sdf')]
+  worker_pool = mp.Pool(processes=mp.cpu_count())
+  output_data = np.asarray(worker_pool.map(scan_sdf, sdf_list)).transpose()
+  output_data = output_data[:,np.argsort(output_data[0])]
+  print(output_data)
+
+  fig = plt.figure()
+  ax = []
+  ax.append(plt.subplot2grid((1,1),(0,0)))
+
+  ax[0].plot(output_data[0], output_data[1])
+
+  plt.savefig('ey_evolution')
+  plt.close()
+ 
+if __name__ == "__main__":
+  main()
