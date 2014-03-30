@@ -33,11 +33,13 @@ def main():
   pulse_energy = worker_pool.map(process_file, sdf_list)
   pulse_energy = np.vstack(pulse_energy)
   pulse_energy = pulse_energy[np.argsort(pulse_energy[:,0])]
-
+  pulse_energy = np.multiply(pulse_energy, (1/pulse_energy.max()))
   fig = plt.figure(0)
   ax = []
   ax.append(plt.subplot2grid((1,1), (0,0)))
   ax[0].plot(pulse_energy[:,0],pulse_energy[:,1])
+  ax[0].set_ylabel('$t (s)$')
+  ax[0].set_xlabel('$W/W_{max}$')
   plt.savefig("pulse_energy")
   plt.close()
 
