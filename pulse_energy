@@ -51,7 +51,7 @@ def integrate_pulse(sdf_data):
   x = sdf_data['Grid/Grid/X']
   y = sdf_data['Grid/Grid/Y']
   ey = sdf_data['Electric Field/Ey']
-  ey2 = numpy.power(ey,2)
+  ey2 = np.power(ey,2)
   y_int = np.asarray([np.trapz(ey2[a], y) for a in range(0,x.shape[0])])
   e_tot = np.trapz(y_int, x)
   return e_tot
