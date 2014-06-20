@@ -15,9 +15,13 @@ from distutils import spawn
 def main():
 
   try:
+    shutil.rmtree('movie')
+  except:
+    pass
+  try:
     os.mkdir('movie')
   except:
-    print('movie directory already exists, will not overwrite')
+    print('Problem creating movie directory, check perms?')
     exit()
   sdf_list = [f for f in os.listdir(os.getcwd()) if f.endswith('.sdf')]
   worker_pool = mp.Pool(processes=mp.cpu_count())
@@ -32,10 +36,9 @@ def main():
     os.exit(1)
 
   conv_args = [converter,'-r', '1', '-i', 'movie/%04d.png', '-c:v', 'libx264',
-              '-r', '30', '-pix_fmt', 'yuv420p', 
+              '-r', '30', '-pix_fmt', 'yuv420p','-y', 
               ''.join((os.path.basename(os.getcwd()),'.mp4'))]
   spawn.spawn(conv_args)
-  shutil.rmtree('movie')
 
 def mkimage(filename):
 
