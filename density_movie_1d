@@ -44,14 +44,12 @@ def mkimage(filename):
 
   filedata = sdf.SDF(filename).read()
   x = filedata['Grid/Grid/X']
-  y = filedata['Grid/Grid/Y']
-  dens = filedata['Derived/Number_Density'].transpose()
+  dens = filedata['Derived/Number_Density']
+  efield = filedata['Electric Field/Ey']
   plt.figure()
   ax = plt.gca()
-  im = ax.imshow(dens, vmin=5e24, vmax=1e26, extent=[x.min(), x.max(), y.min(), y.max()])
-  divider = make_axes_locatable(ax)
-  cax = divider.append_axes('right', size='5%', pad=0.05)
-  plt.colorbar(im, cax=cax)
+  im = ax.plot(x,dens)
+#  ax.set_ylim([1e24,1e26])
   x_px = 1920
   y_px = 1080
   y_size=10
