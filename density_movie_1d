@@ -44,7 +44,7 @@ def mkimage(filename):
 
   filedata = sdf.SDF(filename).read()
   x = filedata['Grid/Grid/X']
-  dens = filedata['Derived/Number_Density']
+  dens = filedata['Derived/Number_Density/electron']
   efield = filedata['Electric Field/Ey']
   plt.figure()
   ax = plt.gca()

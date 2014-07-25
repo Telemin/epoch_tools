@@ -6,6 +6,7 @@ from matplotlib.colors import LogNorm
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 import matplotlib.pyplot as plt
 import numpy as np
+import scipy.signal as sps
 import sdf
 import multiprocessing as mp
 import os
@@ -26,6 +27,7 @@ def main():
   sdf_list = [f for f in os.listdir(os.getcwd()) if f.endswith('.sdf')]
   worker_pool = mp.Pool(processes=mp.cpu_count())
   worker_pool.map(mkimage, sdf_list)
+#  map(mkimage, sdf_list)
   if spawn.find_executable('avconv'):
     converter = spawn.find_executable('avconv')
   elif spawn.find_executable('ffmpeg'):
@@ -44,11 +46,11 @@ def mkimage(filename):
 
   filedata = sdf.SDF(filename).read()
   x = filedata['Grid/Grid/X']
-  dens = filedata['Derived/Number_Density/electron']
-  
-  fftfreq = np.fft.rfftfreq(len(x),(x[1]-x[0]))
-  fft_val = np.absolute(np.fft.rfft(dens))
-  
+  densun = filedata['Derived/Number_Density/electron']
+  ex = (np.abs(filedata['Electric Field/Ex'] ) + 1e-113)
+  dens = sps.medfilt(densun,11)
+#  dens = sps.wiener(densun)
+
 
   fig = plt.figure()
   ax = []
@@ -56,10 +58,11 @@ def mkimage(filename):
   ax.append(plt.subplot2grid((2,1), (1,0)))
 
 
-  ax[0].semilogy(x,dens)
-  #ax[0].plot(x,dens)
-  ax[1].semilogy(fft_val)
-  ax[0].set_ylim([5e23,5e26])
+  #ax[0].semilogy(x,dens)
+  ax[0].plot(x,dens)
+  ax[1].semilogy(x,ex)
+  #ax[0].set_ylim([3e24,3e26])
+  ax[1].set_ylim([1,1e15])
   x_px = 1920
   y_px = 1080
   y_size=10
