@@ -16,8 +16,6 @@ import sdf
 
 def argument_parse():
   parser = argparse.ArgumentParser(description='Find density FFT')
-  parser.add_argument('sdffiles', metavar='NNNN', type=int, nargs='+',
-                   help='SDF file(s) to be processed')
   parser.add_argument('--clim', dest='limits', type=float, nargs=2,
     metavar=("cmin", "cmax"), help='limits of colour axis')
   return(parser.parse_args())
@@ -29,8 +27,8 @@ def mkimage(filename):
   y = filedata['Grid/Grid/Y']
   dens = filedata['Derived/Number_Density'].transpose()
 
-  cmin = arg.limits[0] if arg.limits else dens.min()
-  cmax = arg.limits[1] if arg.limits else dens.max()
+  cmin = args.limits[0] if args.limits else dens.min()
+  cmax = args.limits[1] if args.limits else dens.max()
 
   plt.figure()
   ax = plt.gca()
