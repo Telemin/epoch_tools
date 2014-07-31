@@ -12,8 +12,45 @@ import os
 import shutil
 from distutils import spawn
 
+def argument_parse():
+  parser = argparse.ArgumentParser(description='Find density FFT')
+  parser.add_argument('sdffiles', metavar='NNNN', type=int, nargs='+',
+                   help='SDF file(s) to be processed')
+  parser.add_argument('--clim', dest='limits', type=float, nargs=2,
+    metavar=("cmin", "cmax"), help='limits of colour axis')
+  return(parser.parse_args())
+
+def mkimage(filename):
+
+  filedata = sdf.SDF(filename).read()
+  x = filedata['Grid/Grid/X']
+  y = filedata['Grid/Grid/Y']
+  dens = filedata['Derived/Number_Density'].transpose()
+
+  cmin = arg.limits[0] if arg.limits else dens.min()
+  cmax = arg.limits[1] if arg.limits else dens.max()
+
+  plt.figure()
+  ax = plt.gca()
+  im = ax.imshow(dens, vmin=cmin, vmax=cmax, extent=[x.min(), x.max(), y.min(), y.max()])
+  divider = make_axes_locatable(ax)
+  cax = divider.append_axes('right', size='5%', pad=0.05)
+  plt.colorbar(im, cax=cax)
+  x_px = 1920
+  y_px = 1080
+  y_size=10
+  x_size=y_size*x_px / y_px
+  plt.gcf().set_size_inches(x_size,y_size)
+  savepath = os.path.join('movie',(filename[:-4]))
+  print(savepath)
+  plt.savefig(savepath,dpi=x_px/x_size)
+  plt.close()
+
 def main():
 
+  global args
+  args = argument_parse()
+  
   try:
     shutil.rmtree('movie')
   except:
@@ -39,28 +76,6 @@ def main():
               '-r', '30', '-pix_fmt', 'yuv420p','-y', 
               ''.join((os.path.basename(os.getcwd()),'.mp4'))]
   spawn.spawn(conv_args)
-
-def mkimage(filename):
-
-  filedata = sdf.SDF(filename).read()
-  x = filedata['Grid/Grid/X']
-  y = filedata['Grid/Grid/Y']
-  dens = filedata['Derived/Number_Density'].transpose()
-  plt.figure()
-  ax = plt.gca()
-  im = ax.imshow(dens, vmin=5e24, vmax=1e26, extent=[x.min(), x.max(), y.min(), y.max()])
-  divider = make_axes_locatable(ax)
-  cax = divider.append_axes('right', size='5%', pad=0.05)
-  plt.colorbar(im, cax=cax)
-  x_px = 1920
-  y_px = 1080
-  y_size=10
-  x_size=y_size*x_px / y_px
-  plt.gcf().set_size_inches(x_size,y_size)
-  savepath = os.path.join('movie',(filename[:-4]))
-  print(savepath)
-  plt.savefig(savepath,dpi=x_px/x_size)
-  plt.close()
   
 if __name__ == '__main__':
   main()
