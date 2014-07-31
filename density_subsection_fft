@@ -72,8 +72,8 @@ def fft_process(filename):
   print("New dens.shape: {}".format(plotdens.shape))
 
   densfft = np.absolute(np.fft.fftshift(np.fft.fft2(plotdens)))
-  freqx = np.fft.fftfreq(len(plotx),np.abs(plotx[3]-plotx[2]))
-  freqy = np.fft.fftfreq(len(ploty),np.abs(ploty[3]-ploty[2]))
+  freqx = np.fft.fftshift(np.fft.fftfreq(len(plotx),np.abs(plotx[3]-plotx[2])))
+  freqy = np.fft.fftshift(np.fft.fftfreq(len(ploty),np.abs(ploty[3]-ploty[2])))
 
   plt.figure()
   ax = []
@@ -96,7 +96,7 @@ def fft_process(filename):
   plt.colorbar(im[1], cax=cax[1])
   x_px = 1920
   y_px = 1080
-  y_size=10
+  y_size=8
   x_size=y_size*x_px / y_px
   plt.gcf().set_size_inches(x_size,y_size)
   savepath = ("{0}_fft".format(filename[:-4]))
