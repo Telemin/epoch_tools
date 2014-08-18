@@ -1,61 +1,59 @@
 #!/usr/bin/env python2
 
+import epochtools_common as ec
+import sdf
+
+import argparse
+import multiprocessing as mp
+import os
+from distutils import spawn
+
 import matplotlib
 matplotlib.use('Agg')  
 from matplotlib.colors import LogNorm
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 import matplotlib.pyplot as plt
 import numpy as np
-import sdf
-import multiprocessing as mp
-import os
-import shutil
-from distutils import spawn
 
-def main():
 
-  try:
-    shutil.rmtree('movie')
-  except:
-    pass
-  try:
-    os.mkdir('movie')
-  except:
-    print('failed to make movie directory. check perms?')
-    exit()
-  sdf_list = [f for f in os.listdir(os.getcwd()) if f.endswith('.sdf')]
-  worker_pool = mp.Pool(processes=mp.cpu_count())
-  worker_pool.map(mkimage, sdf_list)
-  if spawn.find_executable('avconv'):
-    converter = spawn.find_executable('avconv')
-  elif spawn.find_executable('ffmpeg'):
-    converter = spawn.find_executable('ffmpeg')
-  else:
-    print("Couldn't find ffmpeg/avconv :(\n"
-          "you're on your own for making the movie")
-    os.exit(1)
+def argument_parse():
+  parser = argparse.ArgumentParser(description='Find density FFT')
+  parser.add_argument('--clim', dest='clim', type=float, nargs=2,
+    metavar=("cmin", "cmax"), help='limits of colour axis')
+  return(parser.parse_args())
 
-  conv_args = [converter,'-r', '1', '-i', 'movie/%04d.png', '-c:v', 'libx264',
-              '-r', '30', '-pix_fmt', 'yuv420p','-y', 
-              ''.join((os.path.basename(os.getcwd()),'_ex.mp4'))]
-  spawn.spawn(conv_args)
 
 def mkimage(filename):
+  
+  try:
+    filedata = sdf.SDF(filename).read()
+  except:
+    print("Failed to open {0}.").format(filename)
+    return
+  
+  try:
+    x = filedata['Grid/Grid/X']
+    y = filedata['Grid/Grid/Y']
+    ex = filedata['Electric Field/Ex'].transpose()
+  except:
+    print("Failed to analyze {}.").format(filename)
+    return
 
-  filedata = sdf.SDF(filename).read()
-  x = filedata['Grid/Grid/X']
-  y = filedata['Grid/Grid/Y']
-  dens = filedata['Electric Field/Ex'].transpose()
+  ymin_loc = np.abs(y).argmin()
+  lineout_ex = ex[ymin_loc]
+ 
+  cmin = args.clim[0] if args.clim else ex.min()
+  cmax = args.clim[1] if args.clim else ex.max()
+
   fig = plt.figure()
   ax = []
   ax.append(plt.subplot2grid((2,1), (0,0)))
   ax.append(plt.subplot2grid((2,1), (1,0)))
-  ymin_loc = np.abs(y).argmin()
-  lineout_dens = dens[ymin_loc]
-  print(x.shape)
-  print(lineout_dens.shape)
-  ax[0].plot(x, lineout_dens)
-  im = ax[1].imshow(dens, vmin=dens.min(), vmax=dens.max(), extent=[x.min(), x.max(), y.min(), y.max()])
+  
+  ax[0].plot(x, lineout_ex)
+  
+  im = ax[1].imshow(ex, vmin=cmin, vmax=cmax,
+                    extent=[x.min(), x.max(), y.min(), y.max()], aspect='auto')
   divider = make_axes_locatable(ax[1])
   cax = divider.append_axes('right', size='5%', pad=0.05)
   plt.colorbar(im, cax=cax)
@@ -68,6 +66,23 @@ def mkimage(filename):
   print(savepath)
   plt.savefig(savepath,dpi=x_px/x_size)
   plt.close()
-  
+  return
+ 
+
+def main():
+  global args
+  args = argument_parse()
+
+  ec.force_mkdir('movie')
+
+  sdf_list = [f for f in os.listdir(os.getcwd()) if f.endswith('.sdf')]
+  worker_pool = mp.Pool(processes=mp.cpu_count())
+  map(mkimage, sdf_list)
+  worker_pool.close()
+  worker_pool.join()
+
+  ec.make_movie('movie','_ex')
+
+ 
 if __name__ == '__main__':
   main()

@@ -17,7 +17,7 @@ def scan_sdf(filename):
   sdf_data = sdf.SDF(filename).read()
   time = sdf_data['Header']['time'] * 3e8 * 6158
   x = sdf_data['Grid/Grid/X'].copy()
-  x *= 6158
+#  x *= 6158
 
   x_size, y_size = sdf_data['Electric Field/Ey'].shape
   print((x_size,y_size))

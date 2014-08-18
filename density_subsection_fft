@@ -75,6 +75,14 @@ def fft_process(filename):
   freqx = np.fft.fftshift(np.fft.fftfreq(len(plotx),np.abs(plotx[3]-plotx[2])))
   freqy = np.fft.fftshift(np.fft.fftfreq(len(ploty),np.abs(ploty[3]-ploty[2])))
 
+#  da1 = densfft.shape[0]/2
+#  da10 = da1 / 4
+#  db1 = densfft.shape[1]/2
+#  db10 = db1 / 4
+#  densfft = densfft[da1-da10:da1+da10,db1-db10:db1+db10]
+#  freqx = freqx[da1-da10:da1+da10]
+#  freqy = freqy[db1-db10:db1+db10]
+  
   plt.figure()
   ax = []
   ax.append(plt.subplot2grid((2,2),(0,0),colspan=2))

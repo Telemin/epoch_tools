@@ -2,9 +2,12 @@
 
 import multiprocessing as mp
 import os
+import sys
 import shutil
 from distutils import spawn
 import argparse
+
+import epochtools_common as ec
 
 import matplotlib
 matplotlib.use('Agg')  
@@ -15,34 +18,70 @@ import numpy as np
 import sdf
 
 def argument_parse():
+
+# Set up parser and global options
   parser = argparse.ArgumentParser(description='Find density FFT')
-  parser.add_argument('--clim', dest='limits', type=float, nargs=2,
+  parser.add_argument('--freshen','-f', dest='freshen', action='store_true')
+  parser.add_argument('--ires', '-i', dest='ires', type=int, nargs=2,
+    metavar=("x(px)", "y(px)"), help='Output image dimensions (px)')
+  parser.add_argument('--numprocs','-n', dest='procs', type=int, default=1,
+    help="Number of analysis threads to use")
+
+# Define subparser handler
+  subparsers = parser.add_subparsers(help="Modes")
+
+#Density mode
+  density = subparsers.add_parser('density',help="Analyze electron density")
+  density.set_defaults(imgfunc=density_image)
+  density.set_defaults(outputdir='density')
+  density.add_argument('--clim', dest='limits', type=float, nargs=2,
     metavar=("cmin", "cmax"), help='limits of colour axis')
+  
   return(parser.parse_args())
 
-def mkimage(filename):
 
-  filedata = sdf.SDF(filename).read()
-  x = filedata['Grid/Grid/X']
-  y = filedata['Grid/Grid/Y']
-  dens = filedata['Derived/Number_Density'].transpose()
+def density_image(filename):
+
+  FileInUse = ec.check_file_in_use(filename)
+  if FileInUse:
+    print("{0} in use by PID {1}, skipping".format(filename,FileInUse))
+    return
+  elif os.path.exists(os.path.join(os.getcwd(),args.outputdir,''.join((filename[:-4],'.png')))):
+    print("{0} already analyzed, skipping".format(filename))
+    return
+  else:
+    print("Analyzing {0}".format(filename))
+
+  try:
+    filedata = sdf.SDF(filename).read()
+    x = filedata['Grid/Grid/X']
+    y = filedata['Grid/Grid/Y']
+    dens = filedata['Derived/Number_Density'].transpose()
+  except:
+    print("Problem analyzing {0}, file corrupted or missing data".format(filename))
+    return
+
 
   cmin = args.limits[0] if args.limits else dens.min()
   cmax = args.limits[1] if args.limits else dens.max()
 
   plt.figure()
-  ax = plt.gca()
-  im = ax.imshow(dens, vmin=cmin, vmax=cmax, extent=[x.min(), x.max(), y.min(), y.max()])
-  divider = make_axes_locatable(ax)
+  ax = []
+  ax.append(plt.subplot2grid((1,1), (0,0)))
+	
+  im = []
+  im.append(ax[0].imshow(dens, vmin=cmin, vmax=cmax, norm=LogNorm(),
+            extent=[x.min(), x.max(), y.min(), y.max()], aspect='auto'))
+
+  divider = make_axes_locatable(ax[0])
   cax = divider.append_axes('right', size='5%', pad=0.05)
-  plt.colorbar(im, cax=cax)
-  x_px = 1920
-  y_px = 1080
+  plt.colorbar(im[0], cax=cax)
+  x_px = args.ires[0] if args.ires else 1920
+  y_px = args.ires[1] if args.ires else 1080
   y_size=10
   x_size=y_size*x_px / y_px
   plt.gcf().set_size_inches(x_size,y_size)
-  savepath = os.path.join('movie',(filename[:-4]))
-  print(savepath)
+  savepath = os.path.join(args.outputdir,(filename[:-4]))
   plt.savefig(savepath,dpi=x_px/x_size)
   plt.close()
 
@@ -50,19 +89,17 @@ def main():
 
   global args
   args = argument_parse()
+
+  if args.freshen == True:
+    print("Re-analyzing all files...\n")
+    ec.force_mkdir(args.outputdir) 
+  else:
+    print("Analyzing new files...\n")
+    ec.mkdir(args.outputdir)
   
-  try:
-    shutil.rmtree('movie')
-  except:
-    pass
-  try:
-    os.mkdir('movie')
-  except:
-    print('Problem creating movie directory, check perms?')
-    exit()
   sdf_list = [f for f in os.listdir(os.getcwd()) if f.endswith('.sdf')]
-  worker_pool = mp.Pool(processes=mp.cpu_count())
-  worker_pool.map(mkimage, sdf_list)
+  worker_pool = mp.Pool(processes=args.procs)
+  worker_pool.map(args.imgfunc, sdf_list)
   if spawn.find_executable('avconv'):
     converter = spawn.find_executable('avconv')
   elif spawn.find_executable('ffmpeg'):
@@ -70,10 +107,10 @@ def main():
   else:
     print("Couldn't find ffmpeg/avconv :(\n"
           "you're on your own for making the movie")
-    os.exit(1)
+    sys.exit(1)
 
-  conv_args = [converter,'-r', '1', '-i', 'movie/%04d.png', '-c:v', 'libx264',
-              '-r', '30', '-pix_fmt', 'yuv420p','-y', 
+  conv_args = [converter,'-r', '1', '-i', '{0}/%04d.png'.format(args.outputdir), 
+              '-c:v', 'libx264', '-r', '30', '-pix_fmt', 'yuv420p','-y', 
               ''.join((os.path.basename(os.getcwd()),'.mp4'))]
   spawn.spawn(conv_args)
   
