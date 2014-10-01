@@ -1,0 +1,33 @@
+#!/bin/bash
+
+workdir="/ccc/work/cont005/pa2461/tooleym"
+scratchdir="/ccc/scratch/cont005/pa2461/tooleym"
+
+if [[ ! -d "$1" ]]; then
+    echo "Are you on drugs? There's no such directory as $1"
+    exit
+fi
+
+if [[ ! $(readlink -f $1) =~ ^$workdir.* ]]; then
+    echo "Jobs must be sumbitted from work dir!"
+    exit
+fi
+
+startdir="$PWD"
+sourcedir=$(readlink -f $1)
+headdir=$(echo $sourcedir | sed "s#^${workdir}\(.*\)#\1#" )
+compdir="$SCRATCHDIR/$headdir"
+
+if [ $(ls $sourcedir/*.qsub 2>/dev/null | wc -l) -ne 1 ]; then
+    echo "Found >1< qsub file! I have no idea what I'm doing! Quitting!"
+    exit
+fi
+
+mkdir -p $compdir
+echo "copying source data to scratch: $compdir"
+cp -v ${sourcedir}/* ${compdir}
+cd $compdir
+jobscript=$(ls *.qsub)
+echo "submitting job $jobscript"
+ccc_msub $jobscript
+cd $startdir
