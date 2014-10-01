@@ -37,7 +37,8 @@ def fft_process(filename):
   sdf_data = process_file(filename)
   
   x = sdf_data['Grid/Grid/X']
-  dens = sdf_data['Derived/Number_Density/electron']
+  y = sdf_data['Grid/Grid/Y']
+  dens = sdf_data['Derived/Number_Density/electron'][:,int(len(y)/2)]
   
   plotx = x
   plotdens = dens
@@ -61,8 +62,10 @@ def fft_process(filename):
   print("New x.shape: {}".format(plotx.shape))
   print("New dens.shape: {}".format(plotdens.shape))
 
-  densfft = np.fft.fftshift(np.absolute(np.fft.fft(plotdens)))
-  freqx = np.fft.fftshift(np.fft.fftfreq(len(plotx),np.abs(plotx[3]-plotx[2])))
+  densfft = np.absolute(np.fft.rfft(plotdens))
+  freqx = np.fft.rfftfreq(len(plotx),np.abs(plotx[3]-plotx[2]))
+
+  print(zip(freqx,densfft))
 
   plt.figure()
   ax = []

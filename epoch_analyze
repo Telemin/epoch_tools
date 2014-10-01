@@ -1,0 +1,156 @@
+#!/usr/bin/env python2
+
+import os
+import sys
+import shutil
+import argparse
+
+import multiprocessing as mp
+from distutils import spawn
+
+import numpy as np
+
+import epochtools_common as ec
+import sdf
+
+import matplotlib
+matplotlib.use('Agg')  
+from matplotlib.colors import LogNorm
+from mpl_toolkits.axes_grid1 import make_axes_locatable
+import matplotlib.pyplot as plt
+
+def argument_parse():
+
+# Set up parser and global options
+  parser = argparse.ArgumentParser(description='Find density FFT')
+  parser.add_argument('--freshen','-f', dest='freshen', action='store_true')
+  parser.add_argument('--ires', '-i', dest='ires', type=int, nargs=2,
+    metavar=("x(px)", "y(px)"), default=(1440,900), 
+    help='Output image dimensions (px)')
+  parser.add_argument('--numprocs','-n', dest='procs', type=int, default=1,
+    help="Number of analysis threads to use")
+
+# Define subparser handler
+  subparsers = parser.add_subparsers(help="Modes", dest='command')
+
+# Movie mode
+  movie = subparsers.add_parser('movie', help="Create Movie")
+  movie.set_defaults(modehandler=make_movie)
+  movie.add_argument('--output','-o', dest='output', type=str, nargs=1,
+    metavar='outputdir', default='movie', help="output directory")
+  movie.add_argument('--plot', dest='rawPlotArgs', action='append', 
+    nargs='+', metavar='lineplot_opts', help="lineplot")
+
+# Movie mode
+  snapshot = subparsers.add_parser('snapshot', help="Create Single Snapshots")
+  snapshot.set_defaults(modehandler=make_snapshots)
+  snapshot.add_argument('snapshot', dest='snapshot', type=int, nargs=+,
+    metavar='NNNN', help='snapshots to analyze')
+  snapshot.add_argument('--output','-o', dest='output', type=str, nargs=1,
+    metavar='outputdir', default='snapshot', help="output filename")
+  snapshot.add_argument('--plot', dest='rawPlotArgs', action='append', 
+    nargs='+', metavar='lineplot_opts', help="lineplot")
+
+  args = parser.parse_args()  
+  return(args)
+
+
+def parse_plot_args(argLists):
+  
+# Now split key value pairs into option dict
+  depth = lambda L: isinstance(L, list) and max(map(depth, L))+1
+
+  if type(argLists) != list:
+    raise TypeError("Expecting argument list/ list of argument lists")
+
+  if depth(argLists) > 2:
+    raise ValueError("Expecting list of depth < 3")
+
+  if depth(argLists) == 1:
+    argLists = [argLists]
+
+  kvpDicts = []
+  for argList in argLists:
+    kvpDict = {}
+    for kvp in argList:
+      try:
+        kvpList = kvp.split('=')
+        kvpList = [i.strip() for i in kvpList]
+        kvpDict[kvpList[0]] = kvpList[1]
+      except Exception as err:
+        print("Error: {0}: not a valid key=value pair"
+          " - skipping".format(kvp))
+    kvpDicts.append(kvpDict)
+  return(kvpDicts)
+
+
+def make_movie(plotArgList):
+  raise NotImplementedError("My author is lazy, come back tomorrow!") 
+  for i in range(0,len(plotArgList)):
+    plotArgs = plotArgList[i]
+    plotArgs['name'] = plotArgs['name'] if 'name' in plotArgs else str(i)
+    make_figure(plotArgs)
+    
+
+def make_snapshots(mainArgs,plotArgList): 
+  for snapshot in mainArgs.snapshots:
+    figure = make_figure(snapshot,mainArgs, plotArgs)
+
+
+def make_figure(snapshot,mainArgs,plotArgs):
+
+  fig = plt.figure()
+
+  numGridSpecs = 0
+  for subPlotArgs in plotArgs:
+    if 'gridspec' in subPlotArgs:
+      numGridSpecs += 1
+
+  if numGridSpecs = len(plotArgs):
+    for subPlotArgs in plotArgs:
+      try:
+        gridSpecStrings = subPlotArgs['gridspec'].split(',')
+
+      
+      plt.subplot2grid(    
+
+def make_lineplot(figure, args):
+  x = None
+  y = None
+  xData = None
+  yData = None
+
+  try:
+    xData = args['x']
+    yData = args['y']
+  except KeyError as err:
+    print("Required option {0} not specified for plot {1}".format(err,
+      args['name']))
+    sys.exit()
+
+  try:
+    sdfData = ec.read_sdf('0010.sdf')
+    x = sdfData[xData]
+    y = sdfData[yData]
+  except Exception as err:
+    print("Arrgh everything broke!")
+    print(err)
+
+  subPlot = plt.subplot2grid((1,1), (0,0))
+  
+  im = []
+
+  im.append(subPlot.plot(x,y))
+
+
+def main():
+  global plotTypes
+  plotTypes = { 'lineplot': make_lineplot }
+  mainArgs = argument_parse()
+  plotArgList = parse_plot_args(mainArgs.rawPlotArgs)
+ 
+  args.modehandler(mainArgs, plotArgList)
+
+  
+if __name__ == '__main__':
+  main()

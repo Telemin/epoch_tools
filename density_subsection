@@ -7,17 +7,14 @@ import shutil
 import argparse
 import numpy as np
 import multiprocessing as mp
-
 from multiprocessing import Manager
 from distutils import spawn
 
 import matplotlib
 matplotlib.use('Agg')  
 from matplotlib import pylab
-import matplotlib.cm as cm
 from matplotlib.colors import LogNorm
 from mpl_toolkits.axes_grid1 import make_axes_locatable
-from mpl_toolkits.mplot3d import Axes3D
 import matplotlib.pyplot as plt
 
 def argument_parse():
@@ -41,11 +38,16 @@ def fft_process(filename):
   
   x = sdf_data['Grid/Grid/X']
   y = sdf_data['Grid/Grid/Y']
+  time = sdf_data['Header']['time']
   dens = sdf_data['Derived/Number_Density/electron']
   
   plotx = x
   ploty = y
   plotdens = dens
+
+  print(x)
+  print(y)
+  print(dens)
 
   print("Initial x.shape: {}".format(x.shape))
   print("Initial y.shape: {}".format(y.shape))
@@ -62,13 +64,17 @@ def fft_process(filename):
     ploty = y[ymin:ymax+1]
     plotdens = dens[xmin:xmax+1,ymin:ymax+1]
 
+  print(plotx)
+  print(ploty)
+  print(plotdens)
+
   print("New x.shape: {}".format(plotx.shape))
   print("New y.shape: {}".format(ploty.shape))
   print("New dens.shape: {}".format(plotdens.shape))
 
-  densfft = np.absolute(np.fft.fftshift(np.fft.fft2(plotdens)))
-  freqx = np.fft.fftshift(np.fft.fftfreq(len(plotx),np.abs(plotx[3]-plotx[2])))
-  freqy = np.fft.fftshift(np.fft.fftfreq(len(ploty),np.abs(ploty[3]-ploty[2])))
+#  densfft = np.absolute(np.fft.fftshift(np.fft.fft2(plotdens)))
+#  freqx = np.fft.fftshift(np.fft.fftfreq(len(plotx),np.abs(plotx[3]-plotx[2])))
+#  freqy = np.fft.fftshift(np.fft.fftfreq(len(ploty),np.abs(ploty[3]-ploty[2])))
 
 #  da1 = densfft.shape[0]/2
 #  da10 = da1 / 4
@@ -78,30 +84,26 @@ def fft_process(filename):
 #  freqx = freqx[da1-da10:da1+da10]
 #  freqy = freqy[db1-db10:db1+db10]
   
-  fig = plt.figure()
+  plt.figure()
   ax = []
-  #ax.append(fig.add_subplot(111, projection='3d'))
-  ax.append(plt.subplot2grid((2,2),(0,0),colspan=2))
-  ax.append(plt.subplot2grid((2,2),(1,0),colspan=2))
+  ax.append(plt.subplot2grid((1,1),(0,0),colspan=2))
+#  ax.append(plt.subplot2grid((2,2),(1,0),colspan=2))
+  ax[0].set_title("time = {}".format(time))
   im = []
   im.append(ax[0].imshow(np.rot90(plotdens), aspect='auto',
     vmin=plotdens.min(), vmax=plotdens.max(),
-    extent=[plotx.min(), plotx.max(), ploty.min(), ploty.max()]))
-  im.append(ax[1].imshow(np.rot90(densfft), aspect='auto',
-    vmin=densfft.min(), vmax=densfft.max(), norm=LogNorm(),
-    extent=[freqx.min(),freqx.max(),freqy.min(),freqy.max()]))
+    extent=[plotx.min(), plotx.max(), ploty.min(), ploty.max()], interpolation='nearest'))
+#  im.append(ax[1].imshow(np.rot90(densfft), aspect='auto',
+#    vmin=1e28, vmax=1e30, norm=LogNorm(),
+#    extent=[freqx.min(), freqx.max(), freqy.min(), freqy.max()], interpolation='nearest'))
   divider = []
   divider.append(make_axes_locatable(ax[0]))
-  divider.append(make_axes_locatable(ax[1]))
+#  divider.append(make_axes_locatable(ax[1]))
   cax = []
   cax.append(divider[0].append_axes('right', size='5%', pad=0.05))
-  cax.append(divider[1].append_axes('right', size='5%', pad=0.05))
+#  cax.append(divider[1].append_axes('right', size='5%', pad=0.05))
   plt.colorbar(im[0], cax=cax[0])
-  plt.colorbar(im[1], cax=cax[1])
-
-#  m = cm.ScalarMappable(cmap=cm.jet)
-#  m.set_array(densfft)
-#  plt.colorbar(m, cax=cax[0])
+#  plt.colorbar(im[1], cax=cax[1])
   x_px = 1920
   y_px = 1080
   y_size=8

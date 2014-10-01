@@ -21,26 +21,21 @@ def argument_parse():
 
 # Set up parser and global options
   parser = argparse.ArgumentParser(description='Find density FFT')
+  parser.add_argument('zvar', type=str, nargs=1, metavar='ZVAR',
+    help='Z variable to plot, as named in SDF file')
   parser.add_argument('--freshen','-f', dest='freshen', action='store_true')
+  parser.add_argument('--outputdir','-o', dest='outputdir', type=str, nargs=1,
+    default="movie")
   parser.add_argument('--ires', '-i', dest='ires', type=int, nargs=2,
     metavar=("x(px)", "y(px)"), help='Output image dimensions (px)')
+  parser.add_argument('--climits', '-c', dest='cLimits', type=float, nargs=2)
   parser.add_argument('--numprocs','-n', dest='procs', type=int, default=1,
     help="Number of analysis threads to use")
 
-# Define subparser handler
-  subparsers = parser.add_subparsers(help="Modes")
-
-#Density mode
-  density = subparsers.add_parser('density',help="Analyze electron density")
-  density.set_defaults(imgfunc=density_image)
-  density.set_defaults(outputdir='density')
-  density.add_argument('--clim', dest='limits', type=float, nargs=2,
-    metavar=("cmin", "cmax"), help='limits of colour axis')
-  
   return(parser.parse_args())
 
 
-def density_image(filename):
+def make_image(filename):
 
   FileInUse = ec.check_file_in_use(filename)
   if FileInUse:
@@ -56,21 +51,26 @@ def density_image(filename):
     filedata = sdf.SDF(filename).read()
     x = filedata['Grid/Grid/X']
     y = filedata['Grid/Grid/Y']
-    dens = filedata['Derived/Number_Density'].transpose()
-  except:
+    dens = np.rot90(filedata[args.zvar[0]])
+  except KeyError:
+    print('entry {0} not found in SDF'.format(args.zvar))
+    return
+  except Exception as err:
     print("Problem analyzing {0}, file corrupted or missing data".format(filename))
+    print(err)
     return
 
 
-  cmin = args.limits[0] if args.limits else dens.min()
-  cmax = args.limits[1] if args.limits else dens.max()
-
+  cmin = args.cLimits[0] if args.cLimits else dens.min()
+  cmax = args.cLimits[1] if args.cLimits else dens.max()
+  print(args.cLimits)
+  print(cmin,cmax)
   plt.figure()
   ax = []
   ax.append(plt.subplot2grid((1,1), (0,0)))
 	
   im = []
-  im.append(ax[0].imshow(dens, vmin=cmin, vmax=cmax, norm=LogNorm(),
+  im.append(ax[0].imshow(dens, vmin=cmin, vmax=cmax,
             extent=[x.min(), x.max(), y.min(), y.max()], aspect='auto'))
 
   divider = make_axes_locatable(ax[0])
@@ -99,7 +99,7 @@ def main():
   
   sdf_list = [f for f in os.listdir(os.getcwd()) if f.endswith('.sdf')]
   worker_pool = mp.Pool(processes=args.procs)
-  worker_pool.map(args.imgfunc, sdf_list)
+  worker_pool.map(make_image, sdf_list)
   if spawn.find_executable('avconv'):
     converter = spawn.find_executable('avconv')
   elif spawn.find_executable('ffmpeg'):
@@ -109,8 +109,8 @@ def main():
           "you're on your own for making the movie")
     sys.exit(1)
 
-  conv_args = [converter,'-r', '5', '-i', '{0}/%04d.png'.format(args.outputdir), 
-              '-c:v', 'libx264', '-r', '25', '-pix_fmt', 'yuv420p','-y', 
+  conv_args = [converter,'-r', '1', '-i', '{0}/%04d.png'.format(args.outputdir), 
+              '-c:v', 'libx264', '-r', '30', '-pix_fmt', 'yuv420p','-y', 
               ''.join((os.path.basename(os.getcwd()),'.mp4'))]
   spawn.spawn(conv_args)
   

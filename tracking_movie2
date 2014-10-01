@@ -1,0 +1,180 @@
+#!/usr/bin/env python2
+
+import sdf
+import re
+import os
+import shutil
+import numpy as np
+import multiprocessing as mp
+from multiprocessing import Manager
+from distutils import spawn
+
+import matplotlib
+matplotlib.use('Agg')  
+from matplotlib import pylab
+from matplotlib.colors import LogNorm
+from mpl_toolkits.axes_grid1 import make_axes_locatable
+import matplotlib.pyplot as plt
+
+match_subset = re.compile("Particles/ID/subset_(?P<subset>.*)/electron")
+
+manager = Manager()
+shared_data = manager.list()
+
+def main():
+  global shared_data
+  try:
+    os.mkdir('movie')
+  except:
+    print('movie directory already exists, will not overwrite')
+    exit()
+  particle_list = process_file('0000.sdf').keys()
+  if len(particle_list) < 1:
+    print("No particle tracks found in this database")
+    return 1
+  sdf_list = [f for f in os.listdir(os.getcwd()) if f.endswith('.sdf')]
+  worker_pool = mp.Pool(processes=mp.cpu_count())
+  particle_data = worker_pool.map(process_file, sdf_list)
+  #particle_data = map(process_file, sdf_list)
+  #particle_tracks = [np.hstack([point[part] for point in particle_data ])
+  #  for part in particle_list]
+  particle_tracks  = []
+  for part in particle_list:
+    count = 0
+    temp = []
+    for point in particle_data:
+      try:
+        temp.append(point[part])
+      except KeyError:
+        pass
+    particle_tracks.append(np.hstack(temp))
+
+  for a in range(0,len(particle_tracks)):
+    particle_tracks[a] = particle_tracks[a][:,particle_tracks[a][0].argsort()]
+    particle_tracks[a][0] /= 1E-6
+    particle_tracks[a][1] /= 1E-6
+    particle_tracks[a][2] *= 1.871157E21
+
+  shared_data.append(particle_tracks)
+
+  worker_pool.map(mkimage, sdf_list)
+  #map(mkimage, sdf_list)
+  if spawn.find_executable('avconv'):
+    converter = spawn.find_executable('avconv')
+  elif spawn.find_executable('ffmpeg'):
+    converter = spawn.find_executable('ffmpeg')
+  else:
+    print("Couldn't find ffmpeg/avconv :(\n"
+          "you're on your own for making the movie")
+    os.exit(1)
+
+  conv_args = [converter,'-r', '1', '-i', 'movie/%04d.png', '-c:v', 'libx264',
+              '-r', '30', '-pix_fmt', 'yuv420p', 
+              ''.join((os.path.basename(os.getcwd()),'_tracking.mp4'))]
+  spawn.spawn(conv_args)
+  shutil.rmtree('movie')
+
+
+def process_file(filename):
+  sdf_data = sdf.SDF(filename).read()
+  particle_position = dict()
+  for current_key in sdf_data.keys():
+    search_result = match_subset.search(current_key)  
+    if search_result:
+      subset = search_result.group('subset')
+      particle_position[subset] = np.vstack((
+        sdf_data['Grid/Particles/subset_{0}/electron/X'.format(subset)],
+        sdf_data['Grid/Particles/subset_{0}/electron/Y'.format(subset)],
+        sdf_data['Particles/Px/subset_{0}/electron'.format(subset)],
+        sdf_data['Particles/ID/subset_{0}/electron'.format(subset)]))
+  return particle_position
+
+
+def mkimage(filename):
+  sdf_data = sdf.SDF(filename).read()
+  particle_position = []
+  for current_key in sdf_data.keys():
+    search_result = match_subset.search(current_key)  
+    if search_result:
+      subset = search_result.group('subset')
+      particle_position.append(np.vstack((
+        sdf_data['Grid/Particles/subset_{0}/electron/X'.format(subset)],
+        sdf_data['Grid/Particles/subset_{0}/electron/Y'.format(subset)],
+        sdf_data['Particles/Px/subset_{0}/electron'.format(subset)],
+        sdf_data['Particles/ID/subset_{0}/electron'.format(subset)])))
+ 
+  x = sdf_data['Grid/Grid/X'].copy()
+  y = sdf_data['Grid/Grid/Y'].copy()
+  dens = sdf_data['Derived/Number_Density'].copy().transpose()
+  
+  phase_space = True
+  try:
+    part_x = sdf_data['Grid/Particles/subset_rnd_frac/electron/X'].copy()
+    part_px = sdf_data['Particles/Px/subset_rnd_frac/electron'].copy()
+  except KeyError:
+    phase_space = False
+
+
+
+## Put things into units we are used to:
+  for a in range(0,len(particle_position)):
+    particle_position[a][0] *= 1E6
+    particle_position[a][1] *= 1E6
+    particle_position[a][2] *= 1.871157E21
+
+  x *= 1E6
+  y *= 1E6
+  dens *= 1E-4
+
+  if phase_space:
+    part_x *= 1E6
+    part_px *= 1.871157E21
+    
+  
+  fig = plt.figure(0)
+  ax = []
+  ax.append(plt.subplot2grid((2,3), (0,0), colspan=3))
+  ax.append(plt.subplot2grid((2,3), (1,0), colspan=2))
+  ax.append(plt.subplot2grid((2,3), (1,2), colspan=1))
+  xmax, ymax = (0.0, 0.0)
+  particle_tracks = shared_data[0]
+  for a in range(0,len(particle_tracks)):
+    ax[0].plot(particle_tracks[a][0],particle_tracks[a][2])
+    xmax = xmax if particle_tracks[a][0].max() < xmax else particle_tracks[a][0].max()
+    ymax = ymax if particle_tracks[a][2].max() < ymax else particle_tracks[a][2].max()
+  
+  im = ax[1].imshow(dens, vmin=1e20, vmax=1e22, extent=[x.min(), x.max(), y.min(), y.max()])
+  for particle in particle_position:
+   ax[0].scatter(particle[0],particle[2],color='k')
+   ax[1].scatter(particle[0],particle[1],color='k')
+  divider = make_axes_locatable(ax[1])
+  cax = divider.append_axes('right', size='5%', pad=0.05)
+  plt.colorbar(im, cax=cax)
+
+  ax[2].plot(part_x,part_px,'k,')
+
+## Label axes, set limits
+  ax[0].set_xlim(0,xmax)
+  ax[0].set_ylim(0,ymax)
+  ax[0].set_xlabel("x / um")
+  ax[0].set_ylabel("px / MeV/c")
+  ax[1].set_xlabel("x / um")
+  ax[1].set_ylabel("y / um")
+  ax[2].set_xlim(x.min(),x.max())
+  ax[2].set_ylim(0,ymax)
+  ax[2].set_xlabel("x / um")
+  ax[2].set_ylabel("px / MeV/c")
+
+
+  x_px = 1920
+  y_px = 1080
+  y_size=10
+  x_size=y_size*x_px / y_px
+  fig.set_size_inches(x_size,y_size)
+  savepath = os.path.join('movie',(filename[:-4]))
+  print(savepath)
+  plt.savefig(savepath,dpi=x_px/x_size)
+  plt.close()
+  
+if __name__ == '__main__':
+  main()

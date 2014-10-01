@@ -41,7 +41,7 @@ def fft_process(filename):
   
   x = sdf_data['Grid/Grid/X']
   y = sdf_data['Grid/Grid/Y']
-  dens = sdf_data['Derived/Number_Density/electron']
+  dens = sdf_data['Electric Field/Ex']
   
   plotx = x
   ploty = y
@@ -85,7 +85,7 @@ def fft_process(filename):
   ax.append(plt.subplot2grid((2,2),(1,0),colspan=2))
   im = []
   im.append(ax[0].imshow(np.rot90(plotdens), aspect='auto',
-    vmin=plotdens.min(), vmax=plotdens.max(),
+    vmin=-1e12, vmax=1e12,
     extent=[plotx.min(), plotx.max(), ploty.min(), ploty.max()]))
   im.append(ax[1].imshow(np.rot90(densfft), aspect='auto',
     vmin=densfft.min(), vmax=densfft.max(), norm=LogNorm(),
