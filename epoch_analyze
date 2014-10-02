@@ -86,7 +86,7 @@ def ex_image(filename):
   ax.append(plt.subplot2grid((1,1), (0,0)))
 	
   im = []
-  im.append(ax[0].imshow(ex, vmin=cmin, vmax=cmax, norm=LogNorm(),
+  im.append(ax[0].imshow(ex, vmin=cmin, vmax=cmax, norm=None,
             extent=[x.min(), x.max(), y.min(), y.max()], aspect='auto'))
 
   divider = make_axes_locatable(ax[0])
@@ -131,7 +131,7 @@ def ey_image(filename):
   ax.append(plt.subplot2grid((1,1), (0,0)))
 	
   im = []
-  im.append(ax[0].imshow(ey, vmin=cmin, vmax=cmax, norm=LogNorm(),
+  im.append(ax[0].imshow(ey, vmin=cmin, vmax=cmax, norm=None,
             extent=[x.min(), x.max(), y.min(), y.max()], aspect='auto'))
 
   divider = make_axes_locatable(ax[0])
