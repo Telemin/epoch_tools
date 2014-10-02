@@ -1,23 +1,21 @@
 #!/usr/bin/env python2
 
+import multiprocessing as mp
 import os
 import sys
 import shutil
+from distutils import spawn
 import argparse
 
-import multiprocessing as mp
-from distutils import spawn
-
-import numpy as np
-
 import epochtools_common as ec
-import sdf
 
 import matplotlib
 matplotlib.use('Agg')  
 from matplotlib.colors import LogNorm
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 import matplotlib.pyplot as plt
+import numpy as np
+import sdf
 
 def argument_parse():
 
@@ -25,132 +23,208 @@ def argument_parse():
   parser = argparse.ArgumentParser(description='Find density FFT')
   parser.add_argument('--freshen','-f', dest='freshen', action='store_true')
   parser.add_argument('--ires', '-i', dest='ires', type=int, nargs=2,
-    metavar=("x(px)", "y(px)"), default=(1440,900), 
-    help='Output image dimensions (px)')
+    metavar=("x(px)", "y(px)"), help='Output image dimensions (px)')
   parser.add_argument('--numprocs','-n', dest='procs', type=int, default=1,
     help="Number of analysis threads to use")
 
 # Define subparser handler
-  subparsers = parser.add_subparsers(help="Modes", dest='command')
+  subparsers = parser.add_subparsers(help="Modes")
 
-# Movie mode
-  movie = subparsers.add_parser('movie', help="Create Movie")
-  movie.set_defaults(modehandler=make_movie)
-  movie.add_argument('--output','-o', dest='output', type=str, nargs=1,
-    metavar='outputdir', default='movie', help="output directory")
-  movie.add_argument('--plot', dest='rawPlotArgs', action='append', 
-    nargs='+', metavar='lineplot_opts', help="lineplot")
+#Density mode
+  density = subparsers.add_parser('density',help="Analyze electron density")
+  density.set_defaults(imgfunc=density_image)
+  density.set_defaults(outputdir='density')
+  density.add_argument('--logscale',action='store_true', 
+    help="log scale output")  
+  density.add_argument('--clim', dest='limits', type=float, nargs=2,
+    metavar=("cmin", "cmax"), help='limits of colour axis')
 
-# Movie mode
-  snapshot = subparsers.add_parser('snapshot', help="Create Single Snapshots")
-  snapshot.set_defaults(modehandler=make_snapshots)
-  snapshot.add_argument('snapshot', dest='snapshot', type=int, nargs=+,
-    metavar='NNNN', help='snapshots to analyze')
-  snapshot.add_argument('--output','-o', dest='output', type=str, nargs=1,
-    metavar='outputdir', default='snapshot', help="output filename")
-  snapshot.add_argument('--plot', dest='rawPlotArgs', action='append', 
-    nargs='+', metavar='lineplot_opts', help="lineplot")
+#ex mode
+  ex = subparsers.add_parser('ex',help="Analyze ex")
+  ex.set_defaults(imgfunc=ex_image)
+  ex.set_defaults(outputdir='ex')
+  ex.add_argument('--clim', dest='limits', type=float, nargs=2,
+   metavar=("cmin", "cmax"), help='limits of colour axis')
 
-  args = parser.parse_args()  
-  return(args)
-
-
-def parse_plot_args(argLists):
-  
-# Now split key value pairs into option dict
-  depth = lambda L: isinstance(L, list) and max(map(depth, L))+1
-
-  if type(argLists) != list:
-    raise TypeError("Expecting argument list/ list of argument lists")
-
-  if depth(argLists) > 2:
-    raise ValueError("Expecting list of depth < 3")
-
-  if depth(argLists) == 1:
-    argLists = [argLists]
-
-  kvpDicts = []
-  for argList in argLists:
-    kvpDict = {}
-    for kvp in argList:
-      try:
-        kvpList = kvp.split('=')
-        kvpList = [i.strip() for i in kvpList]
-        kvpDict[kvpList[0]] = kvpList[1]
-      except Exception as err:
-        print("Error: {0}: not a valid key=value pair"
-          " - skipping".format(kvp))
-    kvpDicts.append(kvpDict)
-  return(kvpDicts)
+#ey mode
+  ey = subparsers.add_parser('ey',help="Analyze ey")
+  ey.set_defaults(imgfunc=ey_image)
+  ey.set_defaults(outputdir='ey')
+  ey.add_argument('--clim', dest='limits', type=float, nargs=2,
+   metavar=("cmin", "cmax"), help='limits of colour axis')
+   
+  return(parser.parse_args())
 
 
-def make_movie(plotArgList):
-  raise NotImplementedError("My author is lazy, come back tomorrow!") 
-  for i in range(0,len(plotArgList)):
-    plotArgs = plotArgList[i]
-    plotArgs['name'] = plotArgs['name'] if 'name' in plotArgs else str(i)
-    make_figure(plotArgs)
-    
+def ex_image(filename):
 
-def make_snapshots(mainArgs,plotArgList): 
-  for snapshot in mainArgs.snapshots:
-    figure = make_figure(snapshot,mainArgs, plotArgs)
-
-
-def make_figure(snapshot,mainArgs,plotArgs):
-
-  fig = plt.figure()
-
-  numGridSpecs = 0
-  for subPlotArgs in plotArgs:
-    if 'gridspec' in subPlotArgs:
-      numGridSpecs += 1
-
-  if numGridSpecs = len(plotArgs):
-    for subPlotArgs in plotArgs:
-      try:
-        gridSpecStrings = subPlotArgs['gridspec'].split(',')
-
-      
-      plt.subplot2grid(    
-
-def make_lineplot(figure, args):
-  x = None
-  y = None
-  xData = None
-  yData = None
+  FileInUse = ec.check_file_in_use(filename)
+  if FileInUse:
+    print("{0} in use by PID {1}, skipping".format(filename,FileInUse))
+    return
+  elif os.path.exists(os.path.join(os.getcwd(),args.outputdir,''.join((filename[:-4],'.png')))):
+    print("{0} already analyzed, skipping".format(filename))
+    return
+  else:
+    print("Analyzing {0}".format(filename))
 
   try:
-    xData = args['x']
-    yData = args['y']
-  except KeyError as err:
-    print("Required option {0} not specified for plot {1}".format(err,
-      args['name']))
-    sys.exit()
+    filedata = sdf.SDF(filename).read()
+    x = filedata['Grid/Grid/X']
+    y = filedata['Grid/Grid/Y']
+    ex = filedata['Electric Field/Ex'].transpose()
+  except:
+    print("Problem analyzing {0}, file corrupted or missing data".format(filename))
+    return
 
-  try:
-    sdfData = ec.read_sdf('0010.sdf')
-    x = sdfData[xData]
-    y = sdfData[yData]
-  except Exception as err:
-    print("Arrgh everything broke!")
-    print(err)
 
-  subPlot = plt.subplot2grid((1,1), (0,0))
-  
+  cmin = args.limits[0] if args.limits else ex.min()
+  cmax = args.limits[1] if args.limits else ex.max()
+
+  plt.figure()
+  ax = []
+  ax.append(plt.subplot2grid((1,1), (0,0)))
+	
   im = []
+  im.append(ax[0].imshow(ex, vmin=cmin, vmax=cmax, norm=LogNorm(),
+            extent=[x.min(), x.max(), y.min(), y.max()], aspect='auto'))
 
-  im.append(subPlot.plot(x,y))
+  divider = make_axes_locatable(ax[0])
+  cax = divider.append_axes('right', size='5%', pad=0.05)
+  plt.colorbar(im[0], cax=cax)
+  x_px = args.ires[0] if args.ires else 1920
+  y_px = args.ires[1] if args.ires else 1080
+  y_size=10
+  x_size=y_size*x_px / y_px
+  plt.gcf().set_size_inches(x_size,y_size)
+  savepath = os.path.join(args.outputdir,(filename[:-4]))
+  plt.savefig(savepath,dpi=x_px/x_size)
+  plt.close()
 
+def ey_image(filename):
+
+  FileInUse = ec.check_file_in_use(filename)
+  if FileInUse:
+    print("{0} in use by PID {1}, skipping".format(filename,FileInUse))
+    return
+  elif os.path.exists(os.path.join(os.getcwd(),args.outputdir,''.join((filename[:-4],'.png')))):
+    print("{0} already analyzed, skipping".format(filename))
+    return
+  else:
+    print("Analyzing {0}".format(filename))
+
+  try:
+    filedata = sdf.SDF(filename).read()
+    x = filedata['Grid/Grid/X']
+    y = filedata['Grid/Grid/Y']
+    ey = filedata['Electric Field/Ey'].transpose()
+  except:
+    print("Problem analyzing {0}, file corrupted or missing data".format(filename))
+    return
+
+
+  cmin = args.limits[0] if args.limits else ey.min()
+  cmax = args.limits[1] if args.limits else ey.max()
+
+  plt.figure()
+  ax = []
+  ax.append(plt.subplot2grid((1,1), (0,0)))
+	
+  im = []
+  im.append(ax[0].imshow(ey, vmin=cmin, vmax=cmax, norm=LogNorm(),
+            extent=[x.min(), x.max(), y.min(), y.max()], aspect='auto'))
+
+  divider = make_axes_locatable(ax[0])
+  cax = divider.append_axes('right', size='5%', pad=0.05)
+  plt.colorbar(im[0], cax=cax)
+  x_px = args.ires[0] if args.ires else 1920
+  y_px = args.ires[1] if args.ires else 1080
+  y_size=10
+  x_size=y_size*x_px / y_px
+  plt.gcf().set_size_inches(x_size,y_size)
+  savepath = os.path.join(args.outputdir,(filename[:-4]))
+  plt.savefig(savepath,dpi=x_px/x_size)
+  plt.close()
+
+
+def density_image(filename):
+
+  FileInUse = ec.check_file_in_use(filename)
+  if FileInUse:
+    print("{0} in use by PID {1}, skipping".format(filename,FileInUse))
+    return
+  elif os.path.exists(os.path.join(os.getcwd(),args.outputdir,''.join((filename[:-4],'.png')))):
+    print("{0} already analyzed, skipping".format(filename))
+    return
+  else:
+    print("Analyzing {0}".format(filename))
+
+  try:
+    filedata = sdf.SDF(filename).read()
+    x = filedata['Grid/Grid/X']
+    y = filedata['Grid/Grid/Y']
+    dens = filedata['Derived/Number_Density/electron'].transpose()
+  except:
+    print("Problem analyzing {0}, file corrupted or missing data".format(filename))
+    return
+
+
+  cmin = args.limits[0] if args.limits else dens.min()
+  cmax = args.limits[1] if args.limits else dens.max()
+
+  plt.figure()
+  ax = []
+  ax.append(plt.subplot2grid((1,1), (0,0)))
+
+  if args.logscale:
+    normalise=LogNorm()
+  else:
+    normalise=None
+
+  im = []
+  im.append(ax[0].imshow(dens, vmin=cmin, vmax=cmax, norm=normalise,
+            extent=[x.min(), x.max(), y.min(), y.max()], aspect='auto'))
+
+  divider = make_axes_locatable(ax[0])
+  cax = divider.append_axes('right', size='5%', pad=0.05)
+  plt.colorbar(im[0], cax=cax)
+  x_px = args.ires[0] if args.ires else 1920
+  y_px = args.ires[1] if args.ires else 1080
+  y_size=10
+  x_size=y_size*x_px / y_px
+  plt.gcf().set_size_inches(x_size,y_size)
+  savepath = os.path.join(args.outputdir,(filename[:-4]))
+  plt.savefig(savepath,dpi=x_px/x_size)
+  plt.close()
 
 def main():
-  global plotTypes
-  plotTypes = { 'lineplot': make_lineplot }
-  mainArgs = argument_parse()
-  plotArgList = parse_plot_args(mainArgs.rawPlotArgs)
- 
-  args.modehandler(mainArgs, plotArgList)
 
+  global args
+  args = argument_parse()
+
+  if args.freshen == True:
+    print("Re-analyzing all files...\n")
+    ec.force_mkdir(args.outputdir) 
+  else:
+    print("Analyzing new files...\n")
+    ec.mkdir(args.outputdir)
+  
+  sdf_list = [f for f in os.listdir(os.getcwd()) if f.endswith('.sdf')]
+  worker_pool = mp.Pool(processes=args.procs)
+  worker_pool.map(args.imgfunc, sdf_list)
+  if spawn.find_executable('avconv'):
+    converter = spawn.find_executable('avconv')
+  elif spawn.find_executable('ffmpeg'):
+    converter = spawn.find_executable('ffmpeg')
+  else:
+    print("Couldn't find ffmpeg/avconv :(\n"
+          "you're on your own for making the movie")
+    sys.exit(1)
+
+  conv_args = [converter,'-r', '5', '-i', '{0}/%04d.png'.format(args.outputdir), 
+              '-c:v', 'libx264', '-r', '25', '-pix_fmt', 'yuv420p','-y', 
+              ''.join((os.path.basename(os.getcwd()),'.mp4'))]
+  spawn.spawn(conv_args)
   
 if __name__ == '__main__':
   main()
