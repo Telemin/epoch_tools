@@ -26,7 +26,21 @@ def argument_parse():
                    help='SDF file(s) to be processed')
   parser.add_argument('--lim', dest='limits', type=float, nargs=4,
     metavar=("xmin", "xmax", "ymin", "ymax"), help='limits of FFT window')
+  parser.add_argument('--logscale', action='store_true',
+    help="Use log scale for output")
+  parser.add_argument('--fftlogscale', action='store_true',
+    help="Use log scale for fft output")
+  parser.add_argument('--clim', dest='clim', type=float, nargs=2,
+    metavar=("cmin", "cmax"), help="colour axis limits")
+  parser.add_argument('--fftclim', dest='fftclim', type=float, nargs=2,
+    metavar=("cmin", "cmax"), help="fft colour axis limits")
+  parser.add_argument('--verbose','-v',action='store_true',
+    help="give verbose (debugging) output")
   return(parser.parse_args())
+
+def debug(*debuginfo):
+  if args.verbose:
+    print(''.join(map(str,debuginfo)))
 
 def process_file(filename):
   try:
@@ -47,24 +61,24 @@ def fft_process(filename):
   ploty = y
   plotdens = dens
 
-  print("Initial x.shape: {}".format(x.shape))
-  print("Initial y.shape: {}".format(y.shape))
-  print("Initial dens.shape: {}".format(dens.shape))
+  debug("Initial x.shape: {}".format(x.shape))
+  debug("Initial y.shape: {}".format(y.shape))
+  debug("Initial dens.shape: {}".format(dens.shape))
 
   if args.limits:
     xmin = (np.abs(x-args.limits[0])).argmin()
     xmax = (np.abs(x-args.limits[1])).argmin()
     ymin = (np.abs(y-args.limits[2])).argmin()
     ymax = (np.abs(y-args.limits[3])).argmin()
-    print("x limits, {}: {} -- {}: {}".format(xmin,x[xmin],xmax,x[xmax]))
-    print("y limits, {}: {} -- {}: {}".format(ymin,y[ymin],ymax,y[ymax]))
+    debug("x limits, {}: {} -- {}: {}".format(xmin,x[xmin],xmax,x[xmax]))
+    debug("y limits, {}: {} -- {}: {}".format(ymin,y[ymin],ymax,y[ymax]))
     plotx = x[xmin:xmax+1]
     ploty = y[ymin:ymax+1]
     plotdens = dens[xmin:xmax+1,ymin:ymax+1]
 
-  print("New x.shape: {}".format(plotx.shape))
-  print("New y.shape: {}".format(ploty.shape))
-  print("New dens.shape: {}".format(plotdens.shape))
+  debug("New x.shape: {}".format(plotx.shape))
+  debug("New y.shape: {}".format(ploty.shape))
+  debug("New dens.shape: {}".format(plotdens.shape))
 
   densfft = np.absolute(np.fft.fftshift(np.fft.fft2(plotdens)))
   freqx = np.fft.fftshift(np.fft.fftfreq(len(plotx),np.abs(plotx[3]-plotx[2])))
@@ -77,18 +91,37 @@ def fft_process(filename):
 #  densfft = densfft[da1-da10:da1+da10,db1-db10:db1+db10]
 #  freqx = freqx[da1-da10:da1+da10]
 #  freqy = freqy[db1-db10:db1+db10]
-  
+ 
+  if args.logscale:
+    normalise = LogNorm()
+  else:
+    normalise = None
+
+  if args.fftlogscale:
+    fftnormalise = LogNorm()
+  else:
+    fftnormalise = None
+
+  cmin = args.clim[0] if args.clim else (plotdens.min() if plotdens.min() > 2 else 2)
+  cmax = args.clim[1] if args.clim else plotdens.max()
+  fftcmin = args.fftclim[0] if args.fftclim else densfft.min()
+  fftcmax = args.fftclim[1] if args.fftclim else densfft.max()
+
+  debug(cmin,cmax)
+  debug(fftcmin,fftcmax)
+
+
   fig = plt.figure()
   ax = []
   #ax.append(fig.add_subplot(111, projection='3d'))
   ax.append(plt.subplot2grid((2,2),(0,0),colspan=2))
   ax.append(plt.subplot2grid((2,2),(1,0),colspan=2))
   im = []
-  im.append(ax[0].imshow(np.rot90(plotdens), aspect='auto',
-    vmin=plotdens.min(), vmax=plotdens.max(),
+  im.append(ax[0].imshow(np.rot90(plotdens),aspect='auto',cmap=plt.get_cmap('CMRmap'),
+    vmin=cmin, vmax=cmax, norm=normalise,
     extent=[plotx.min(), plotx.max(), ploty.min(), ploty.max()]))
   im.append(ax[1].imshow(np.rot90(densfft), aspect='auto',
-    vmin=densfft.min(), vmax=densfft.max(), norm=LogNorm(),
+    vmin=fftcmin, vmax=fftcmax, cmap=plt.get_cmap('CMRmap'), norm=fftnormalise,
     extent=[freqx.min(),freqx.max(),freqy.min(),freqy.max()]))
   divider = []
   divider.append(make_axes_locatable(ax[0]))
@@ -108,7 +141,7 @@ def fft_process(filename):
   x_size=y_size*x_px / y_px
   plt.gcf().set_size_inches(x_size,y_size)
   savepath = ("{0}_fft".format(filename[:-4]))
-  print(savepath)
+  debug(savepath)
   plt.savefig(savepath,dpi=x_px/x_size)
   plt.close()
 
