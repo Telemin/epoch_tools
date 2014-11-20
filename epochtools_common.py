@@ -7,7 +7,22 @@ from distutils import spawn
 import sdf
 import numpy as np
 import psutil
+import math
 
+
+def plasma_freq(dens):
+  e = 1.602176565e-19
+  e0 = 8.854187817e-12
+  me = 9.10938291e-31
+  fsq = dens * e * e / (me * e0)
+  return(math.sqrt(fsq))
+
+def critical_density(omega):
+  e = 1.602176565e-19
+  e0 = 8.854187817e-12
+  me = 9.10938291e-31
+  nc = omega * omega * me * e0 / (e * e)
+  return(nc)
 
 def mkdir(dirname):
   try:
