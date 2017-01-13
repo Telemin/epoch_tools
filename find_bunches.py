@@ -318,11 +318,16 @@ def main():
     ax1norm=LogNorm(1e23,1e26)
     ax2norm = LogNorm(1,100)
 
+    if is3d:
+        plot_dens = sdf_dens[:,:,int(0.5*sdf_dens.shape[3])]
+    else:
+        plot_dens = sdf_dens
+
     mpl.rcParams.update({'font.size': 8})
     fig = mf.Figure(figsize=(3.2,2))
     canvas = mplbea.FigureCanvasAgg(fig)
     ax = fig.add_axes(ax1loc)
-    ax.imshow(sdf_dens.T
+    ax.imshow(plot_dens.T
              ,aspect='auto'
              ,extent=limlist
              ,origin='upper'
