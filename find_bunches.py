@@ -138,31 +138,33 @@ def main():
 
     sdf_gridx = sdf_gridx[xargmin:xargmax]
     sdf_gridy = sdf_gridy[yargmin:yargmax]
-    sdf_gridz = sdf_gridz[zargmin:zargmax]
     sdf_dens = sdf_dens[xargmin:xargmax,yargmin:yargmax]
+    if is3d:
+        sdf_gridz = sdf_gridz[zargmin:zargmax]
 
     ### Electron selection magic happens here
 
-    energy_mask = np.where(sdf_e_px > cutoff_px)
+    energy_mask = sdf_e_px > cutoff_px
     position_mask = np.full(sdf_e_px.shape, True, dtype=bool)
     if None not in ell.values():
         if is3d:
-            position_mask = np.where( 
+            position_mask = ( 
             ((sdf_e_x - ell['center'])**2 / (0.25*ell['width']**2)) +
             (sdf_e_y**2 / (0.25*ell['height']**2)) +
             (sdf_e_z**2 / (0.25*ell['height']**2)) < 1 )
         else:
-            position_mask = np.where(
+            position_mask = (
             ((sdf_e_x - ell['center'])**2 / (0.25*ell['width']**2)) +
             (sdf_e_y**2 / (0.25*ell['height']**2)) < 1 )
 
-        bunch_electron_mask = np.logical_and(energy_mask, position_mask)
+        bunch_electron_mask = np.where(np.logical_and(energy_mask,
+                                                position_mask))
 
     bunch_electron_x = sdf_e_x[bunch_electron_mask].reshape(-1)
     bunch_electron_y = sdf_e_y[bunch_electron_mask].reshape(-1)
-    bunch_electron_z = sdf_e_z[bunch_electron_mask].reshape(-1)
     bunch_electron_w = sdf_e_w[bunch_electron_mask].reshape(-1)
-
+    if is3d:
+        bunch_electron_z = sdf_e_z[bunch_electron_mask].reshape(-1)
 
     if grids['xgrid'] is not None:
         xbins = np.arange(hist_limits['xmin'],hist_limits['xmax']+grids['xgrid'],grids['xgrid'])
