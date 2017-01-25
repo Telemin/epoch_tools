@@ -1,0 +1,186 @@
+#!/usr/bin/env python
+# vim: set fileencoding=UTF-8
+
+import sdf
+import re
+import os
+import shutil
+import argparse
+import numpy as np
+import numpy.linalg as la
+import multiprocessing as mp
+
+from multiprocessing import Manager
+from distutils import spawn
+
+import matplotlib
+matplotlib.use('Agg')  
+from matplotlib import pylab
+import matplotlib.cm as cm
+from matplotlib.colors import LogNorm, SymLogNorm
+from mpl_toolkits.axes_grid1 import make_axes_locatable
+from mpl_toolkits.mplot3d import Axes3D
+import matplotlib.pyplot as plt
+
+def argument_parse():
+  parser = argparse.ArgumentParser(description='Find density FFT')
+  parser.add_argument('sdffiles', metavar='NNNN', type=int, nargs='+',
+                   help='SDF file(s) to be processed')
+  parser.add_argument('--lim', dest='limits', type=float, nargs=4,
+    metavar=("xmin", "xmax", "ymin", "ymax"), help='limits of window')
+  parser.add_argument('--logscale', action='store_true',
+    help="Use log scale for output")
+  parser.add_argument('--clim', dest='clim', type=float, nargs=2,
+    metavar=("cmin", "cmax"), help="colour axis limits")
+  parser.add_argument('--verbose','-v',action='store_true',
+    help="give verbose (debugging) output")
+  parser.add_argument('--prefix','-p',default='',
+    help="file prefix")
+  return(parser.parse_args())
+
+def debug(*debuginfo):
+  if args.verbose:
+    print(''.join(map(str,debuginfo)))
+
+def process_file(filename):
+  try:
+    sdf_data = sdf.SDF(filename).read()
+  except:
+    print("Failed to open file {0}".format(filename))
+    exit()
+  return sdf_data
+
+def fft_process(filename):
+  sdfData = process_file(filename)
+  
+  x = sdfData['Grid/Grid/X']
+  y = sdfData['Grid/Grid/Y']
+  eField = np.rot90(np.dstack((sdfData['Electric Field/Ex'],
+    sdfData['Electric Field/Ey'],
+    sdfData['Electric Field/Ez'])))
+  bField = np.rot90(np.dstack((sdfData['Magnetic Field/Bx'],
+    sdfData['Magnetic Field/By'],
+    sdfData['Magnetic Field/Bz'])))
+  dens = np.rot90(sdfData['Derived/Number_Density/electron'])
+
+  # Data is in format row:col -> y:x
+
+  if args.limits:
+    xMin = min((args.limits[0],args.limits[1]))
+    xMax = max((args.limits[0],args.limits[1]))
+    yMin = min((args.limits[2],args.limits[3]))
+    yMax = max((args.limits[2],args.limits[3]))
+    xArgMin = np.searchsorted(x, [xMin])[0] 
+    xArgMax = np.searchsorted(x, [xMax])[0]
+    yArgMin = np.searchsorted(y, [yMin])[0]
+    yArgMax = np.searchsorted(y, [yMax])[0]
+
+    x = x[xArgMin:xArgMax]
+    y = y[yArgMin:yArgMax]
+
+    eField = eField[yArgMin:yArgMax,xArgMin:xArgMax]
+    bField = bField[yArgMin:yArgMax,xArgMin:xArgMax]
+    dens = dens[yArgMin:yArgMax,xArgMin:xArgMax]
+    
+  poynting = np.cross(eField,bField)
+  pmag = la.norm(poynting, axis=2)
+  print('x',x.shape)
+  print('y',y.shape)
+  print(dens.shape)
+  print(poynting.shape)
+  print(pmag.shape)
+
+  if args.logscale:
+    densNorm = LogNorm()
+    poyntNorm = LogNorm()
+  else:
+    densNorm = None
+    poyntNorm = None
+
+  normalise = None
+
+  densCMin = args.clim[0] if args.clim else (dens.min() if dens.min() > 2 else 2)
+  densCMax = args.clim[1] if args.clim else dens.max()
+
+  fig = plt.figure()
+  ax = []
+  im = []
+  #ax.append(fig.add_subplot(111, projection='3d'))
+  ax.append(plt.subplot2grid((2,2),(0,0)))
+  ax.append(plt.subplot2grid((2,2),(1,0)))
+  ax.append(plt.subplot2grid((2,2),(0,1)))
+  ax.append(plt.subplot2grid((2,2),(1,1)))
+
+  im.append(ax[0].imshow(dens,aspect='auto',cmap=plt.get_cmap('CMRmap'),
+    norm=densNorm, interpolation='none', vmin=densCMin, vmax=densCMax,
+    extent=[x.min(), x.max(), y.min(), y.max()]))
+  im.append(ax[1].imshow(eField[:,:,0],aspect='auto',cmap=plt.get_cmap('CMRmap'),
+    norm=normalise, interpolation='none',
+    extent=[x.min(), x.max(), y.min(), y.max()]))
+  im.append(ax[2].imshow(eField[:,:,1],aspect='auto',cmap=plt.get_cmap('CMRmap'),
+    vmin=eField[:,:,1].min(), vmax=eField[:,:,1].max(),
+    norm=normalise, interpolation='none',
+    extent=[x.min(), x.max(), y.min(), y.max()]))
+  im.append(ax[3].imshow(pmag,aspect='auto',cmap=plt.get_cmap('CMRmap'),
+    norm=poyntNorm, interpolation='none', vmin=pmag.min(), vmax=pmag.max(),
+    extent=[x.min(), x.max(), y.min(), y.max()]))
+  im.append(ax[3].streamplot(x,y,poynting[:,:,0],poynting[:,:,1],
+    color='k',density=1.2))
+  ax[0].ticklabel_format(style='sci', scilimits=(-2,2))
+  ax[1].ticklabel_format(style='sci', scilimits=(-2,2))
+  ax[2].ticklabel_format(style='sci', scilimits=(-2,2))
+  ax[3].ticklabel_format(style='sci', scilimits=(-2,2))
+  ax[3].set_xlim(x.min(),x.max())
+  ax[3].set_ylim(y.min(),y.max())
+
+  divider = []
+  cax = []
+  cbar = []
+  divider.append(make_axes_locatable(ax[0]))
+  divider.append(make_axes_locatable(ax[1]))
+  divider.append(make_axes_locatable(ax[2]))
+  divider.append(make_axes_locatable(ax[3]))
+  cax.append(divider[0].append_axes('right', size='5%', pad=0.05))
+  cax.append(divider[1].append_axes('right', size='5%', pad=0.05))
+  cax.append(divider[2].append_axes('right', size='5%', pad=0.05))
+  cax.append(divider[3].append_axes('right', size='5%', pad=0.05))
+  cbar.append(plt.colorbar(im[0], cax=cax[0]))
+  cbar.append(plt.colorbar(im[1], cax=cax[1]))
+  cbar.append(plt.colorbar(im[2], cax=cax[2]))
+  cbar.append(plt.colorbar(im[3], cax=cax[3]))
+  
+  ax[1].set_xlabel(r'$x\ \mathrm{(m)}$')
+  ax[3].set_xlabel(r'$x\ \mathrm{(m)}$')
+  ax[0].set_ylabel(r'$y\ \mathrm{(m)}$')
+  ax[1].set_ylabel(r'$y\ \mathrm{(m)}$')
+  cbar[0].set_label(r'$n_e\ \mathrm{(m^{-3})}$')
+  cbar[1].set_label(r'$E_x\ \mathrm{(V/m)}$')
+  cbar[2].set_label(r'$E_y\ \mathrm{(V/m)}$')
+  cbar[3].set_label(r'$P\ \mathrm{(W/m^2)}$')
+
+#  m = cm.ScalarMappable(cmap=cm.jet)
+#  m.set_array(densfft)
+#  plt.colorbar(m, cax=cax[0])
+  x_px = 1920
+  y_px = 1080
+  y_size=8
+  x_size=y_size*x_px / y_px
+  plt.gcf().set_size_inches(x_size,y_size)
+  savepath = ("{0}{1}_poynting".format(args.prefix,filename[:-4]))
+  debug(savepath)
+  plt.savefig(savepath,dpi=x_px/x_size)
+  plt.close()
+
+
+def main():
+  global args
+  args = argument_parse()
+  
+  for filenum in args.sdffiles:
+    filename = "{0:04d}.sdf".format(filenum)
+    fft_process(filename)
+    
+   
+if __name__ == "__main__":
+  main()
+

@@ -1,4 +1,5 @@
 #!/usr/bin/env python2
+# vim: set fileencoding=UTF-8
 
 import epochtools_common as ec
 import sdf
@@ -11,9 +12,10 @@ import os
 from distutils import spawn
 
 import numpy as np
-import math as m
+import math
 
 import scipy as sp
+import scipy.optimize as so
 import scipy.constants as const
 import scipy.interpolate as si
 
@@ -72,9 +74,13 @@ def local_argmax(iterable, start, window):
 def argument_parse():
   parser = argparse.ArgumentParser(description='Find density FFT')
   parser.set_defaults(outputdir='vg_tracking')
+  parser.add_argument('gamma', type=float)
+  parser.add_argument('ripple', type=float)
   parser.add_argument('--ires', dest="ires", type=int, nargs=2)
-  parser.add_argument('--drop-first','-d', dest="dropFirst", type=int, nargs=1)
-  parser.add_argument('--drop-after','-a', dest="dropAfter", type=int, nargs=1)
+  parser.add_argument('--drop-first','-d', dest="dropFirst", type=int)
+  parser.add_argument('--drop-last','-D', dest="dropLast", type=int)
+  parser.add_argument('--fit-first','-f', dest="fitFirst", type=int)
+  parser.add_argument('--fit-last','-F', dest="fitLast", type=int)
   parser.add_argument('--clim', dest='clim', type=float, nargs=2,
     metavar=("cmin", "cmax"), help='limits of colour axis')
   parser.add_argument('--nprocs', '-n', type=int, dest='procs', default=1)
@@ -135,6 +141,9 @@ def find_first_minimum(data,sliceSize=50,stepSize=50,largestMinimum=-1e10):
       continue
   return(bestSliceMinArg)
 
+def midpoints(x):
+    return((x[:-1] + x[1:])/2)
+
 
 def extract_zero_point(filename):
  
@@ -150,19 +159,23 @@ def extract_zero_point(filename):
 
  
   try:
-    filedata = sdf.SDF(filename).read()
-    x = filedata['Grid/Grid/X']
-    y = filedata['Grid/Grid/Y']
-    ex = filedata['Electric Field/Ex'].transpose()
-    dens = filedata['Derived/Number_Density'].transpose()
-  except:
+    filedata = sdf.read(filename)
+    x = midpoints(filedata.Grid_Grid.data[0])
+    print(x.shape)
+    y = midpoints(filedata.Grid_Grid.data[1])
+    print(y.shape)
+    ex = filedata.Electric_Field_Ex.data.transpose()
+    print(ex.shape)
+    dens = filedata.Derived_Number_Density.data.transpose()
+  except Exception as err:
+    print(err)
     print("Problem analyzing {0}, file corrupted or missing data".format(filename))
     return
 
   ymin_loc = np.abs(y).argmin()
   lineout_ex = ex[ymin_loc]
   slineout_ex = lineout_ex
-  time = filedata['Header']['time']
+  time = filedata.Header['time']
   exargmin = find_first_minimum(lineout_ex)
   exarg0 = find_zero_crossing(lineout_ex, exargmin, 0)
   print("crossing x:",x[exarg0], x[exarg0+1])
@@ -206,7 +219,30 @@ def extract_zero_point(filename):
 
 
   return((x0, time))
- 
+
+def cos_fit(x,y):
+  guessMean = 1
+  guessAmp = 0.2
+  guessPhase = 0
+  guessK = 2*np.pi / args.ripple
+
+  print("Fitting first guess: {0} + {1}*sin({3}*x + {2})".format(guessMean,
+    guessAmp, guessPhase, guessK))
+
+  def optimizationFunction(x, a, b, c, k):
+    return(a + b*np.sin(x*k + c))
+
+  pOpt, pCov= so.curve_fit(optimizationFunction, x, y,
+    [guessMean, guessAmp, guessPhase, guessK])
+
+  fitMean, fitAmp, fitPhase, fitK = pOpt
+  pErr = np.sqrt(np.diag(pCov))
+
+  print("Fitting optimized fit: {0} + {1}*sin({3}*x + {2})".format(fitMean,
+    fitAmp, fitPhase, fitK))
+
+  return(pOpt, pErr)
+
 
 def main():
   global args
@@ -227,62 +263,104 @@ def main():
     workerPool.join()
 
   except KeyboardInterrupt:
-    print "Caught keyboard interrupt, terminating..."
+    print("Caught keyboard interrupt, terminating...")
     workerPool.terminate()
     workerpool.join()
 
-  zeropoints = filter(None, zeropoints)
+  zeropoints = list(filter(None, zeropoints))
 
   zeropoints.sort(key=lambda tup: tup[1])
   
   with open('zeropoints.pickle' ,'wb') as f:
     pickle.dump(zeropoints, f)
 
-  
   if args.dropFirst:
-    zeropoints = zeropoints[args.dropFirst[0]:-1]  
-  if args.dropAfter:
-    zeropoints = zeropoints[0:args.dropAfter[0]]  
+    zeropoints = zeropoints[args.dropFirst:-1]  
+  if args.dropLast:
+    zeropoints = zeropoints[0:-args.dropLast]  
 
   x, t = zip(*zeropoints)
+  x = np.asarray(x)
+  t = np.asarray(t)
   dxdt = np.gradient(x, t[1]-t[0])
   beta = dxdt / 3e8
  
+  np.savetxt("beta_x.txt", np.transpose(np.asarray([x,beta])), delimiter=" ")
+
+  fitK = 2*np.pi / args.ripple
+  fitX = x
+  fitBeta = beta
+ 
+  if args.fitFirst:
+    dif = (args.fitFirst - args.dropFirst) if args.dropFirst else args.fitFirst
+    print(dif)
+    fitX = fitX[dif:-1]  
+    fitBeta = fitBeta[dif:-1]  
+  if args.fitLast:
+    dif = (args.fitLast - args.dropLast) if args.dropLast else args.fitLast
+    print(dif)
+    fitX = fitX[0:-dif]  
+    fitBeta = fitBeta[0:-dif]  
+
+  print("Fitting using {} points".format(len(fitX)))
+
+  betaCoeffs, betaErrs = cos_fit(fitX,fitBeta)
+
+  xFit = betaCoeffs[0] + betaCoeffs[1]*np.sin(fitX*betaCoeffs[3] + betaCoeffs[2])
+
+  plotX = x / 1e-6
+  plotFitX = fitX / 1e-6
+
+
   gamma = np.power(beta, 2)
   gamma = 1.-gamma
   gamma = np.power(np.sqrt(gamma),-1)
 
+  kostgamma = args.gamma
+  kostbeta = math.sqrt(1 - math.pow(kostgamma,-2))
+  print("beta = {0}".format(kostbeta))
+
+  try:
+    avgGamma = math.sqrt(1/(1 - math.pow(betaCoeffs[0],2)))
+    avgGammaLow = abs(math.sqrt(1/(1 - math.pow(betaCoeffs[0]-betaErrs[0],2))) - avgGamma)
+    avgGammaHigh = math.sqrt(1/(1 - math.pow(betaCoeffs[0]+betaErrs[0],2))) - avgGamma
+  except:
+    avgGamma = 1
+    avgGammaLow = 1
+    avgGammaHigh = 1
 
   plt.figure()
   ax = []
   ax.append(plt.subplot2grid((1,1), (0,0)))
   im = []
   im.append(ax[0].plot(t, beta))
-  im.append(ax[0].axhline(1))
-  ax[0].set_ylim(0,6)
-  x_px = args.ires[0] if args.ires else 1440
-  y_px = args.ires[1] if args.ires else 900
-  y_size=10
-  x_size=y_size*x_px / y_px
-  plt.gcf().set_size_inches(x_size,y_size)
+  im.append(ax[0].axhline(kostbeta))
+  ax[0].set_ylim(0,3)
+  ax[0].set_xlabel(r'$t (s)$')
+  ax[0].set_ylabel(r'$\beta_{ph}$')
   savepath = 'beta_t'
-  plt.savefig(savepath,dpi=x_px/x_size)
+  plt.savefig(savepath)
   plt.close()
 
   plt.figure()
   ax = []
   ax.append(plt.subplot2grid((1,1), (0,0)))
   im = []
-  im.append(ax[0].plot(x, beta,'k.'))
-  im.append(ax[0].axhline(1))
-  ax[0].set_ylim(0,6)
-  x_px = args.ires[0] if args.ires else 1440
-  y_px = args.ires[1] if args.ires else 900
-  y_size=10
-  x_size=y_size*x_px / y_px
-  plt.gcf().set_size_inches(x_size,y_size)
+  im.append(ax[0].plot(plotX, beta, 'k.'))
+  im.append(ax[0].plot(plotFitX, xFit))
+  im.append(ax[0].axhline(kostbeta))
+  ax[0].set_ylim(0,3)
+  ax[0].text(40,1.6, r'$<\beta_{{ph}}>={0:.3f}+{1:.3f}$'.format(betaCoeffs[0],betaErrs[0]),
+    fontsize=15)
+  ax[0].text(40,1.4, r'$<\gamma_{{ph}}>={0:.3f}^{{+{1:.3f} }}_{{ -{2:.3f} }}$'
+  r''.format(avgGamma,avgGammaHigh, avgGammaLow), fontsize=15)
+#  ax[0].text(40,2.5, r'$\beta = {1:.3f}*\sin(\frac{{2 \pi x}}{{ {3:.3f} }} + '
+#  r'{2:.3f}) + {0:.3f}$'.format(betaCoeffs[0], betaCoeffs[1], betaCoeffs[2],
+#  (2*np.pi*1e6)/betaCoeffs[3]))
+  ax[0].set_xlabel(r'$x \mathrm{(\mu m)}$')
+  ax[0].set_ylabel(r'$\beta$')
   savepath = 'beta_x'
-  plt.savefig(savepath,dpi=x_px/x_size)
+  plt.savefig(savepath)
   plt.close()
 
   plt.figure()
@@ -290,15 +368,11 @@ def main():
   ax.append(plt.subplot2grid((1,1), (0,0)))
   im = []
   im.append(ax[0].plot(x, gamma))
-  im.append(ax[0].axhline(2.72))
+  im.append(ax[0].axhline(1))
+  im.append(ax[0].axhline(kostgamma))
   ax[0].set_ylim(0,10)
-  x_px = args.ires[0] if args.ires else 1440
-  y_px = args.ires[1] if args.ires else 900
-  y_size=10
-  x_size=y_size*x_px / y_px
-  plt.gcf().set_size_inches(x_size,y_size)
   savepath = 'gamma_x'
-  plt.savefig(savepath,dpi=x_px/x_size)
+  plt.savefig(savepath)
   plt.close()
 
 

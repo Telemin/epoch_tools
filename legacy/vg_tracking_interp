@@ -1,0 +1,225 @@
+#!/usr/bin/env python
+# vim: set fileencoding=UTF-8
+
+import epochtools_common as ec
+import sdf
+import pickle
+
+import signal
+import argparse
+import multiprocessing as mp
+import os
+from distutils import spawn
+
+import numpy as np
+import numpy.random as nr
+import math
+
+import scipy as sp
+import scipy.optimize as so
+import scipy.constants as const
+import scipy.interpolate as si
+
+import matplotlib
+matplotlib.use('Agg')  
+from matplotlib.colors import LogNorm
+from mpl_toolkits.axes_grid1 import make_axes_locatable
+import matplotlib.pyplot as plt
+
+def argument_parse():
+  parser = argparse.ArgumentParser(description='Find density FFT')
+  parser.set_defaults(outputdir='vg_tracking')
+  parser.add_argument('rangeStart', type=float)
+  parser.add_argument('rangeEnd', type=float)
+  parser.add_argument('oscLength', type=float)
+  parser.add_argument('--rangemin', dest='rangeMin', type=float)
+  parser.add_argument('--rangemax', dest='rangeMax', type=float)
+  parser.add_argument('--title', dest='titleText', type=str, default='')
+  parser.add_argument('-s','--samplesize',dest="sampleSize",type=int,default=50)
+  parser.add_argument('-i','--ipython',dest="iPython", action='store_true')
+  
+  return(parser.parse_args())
+
+
+def find_zero_crossing(data, start=0, stop=-1):
+  direction = -1 if ( start > stop and stop > -1) else 1
+
+  for i in range(start, stop, direction):
+    if (data[i] * data[i+1]) < 0:
+      return(i)
+
+  return(-1)
+
+def interpolate_crossing(a, b):
+  m = (b[1] - a[1]) / (b[0] - a[0])
+  c = a[1] - (a[0] * m)
+  print("\t interpolation debug:")
+  print("\t a: {0} \n \t b: {1}".format(a,b))
+  print("\t m: {0}".format(m))
+  if m != 0:
+    zero = - (c/m)
+  else:
+    zero = a[0]
+  print("\t zero: {0}".format(zero))
+  return(zero)
+
+def find_first_minimum(data,sliceSize=50,stepSize=50,largestMinimum=-1e10):
+  bestSliceMin = 0
+  bestSliceMinArg = -1
+  for i in range(len(data)-(sliceSize),0+(sliceSize),-stepSize):
+    lappedslice = data[i-sliceSize:i+sliceSize]
+    sliceMinArg = i - sliceSize + np.argmin(lappedslice)
+    sliceMin = data[sliceMinArg]
+    if ( bestSliceMin < largestMinimum) and ( bestSliceMin < sliceMin ):
+      break
+    elif (sliceMin < bestSliceMin):
+      bestSliceMinArg = sliceMinArg
+      bestSliceMin = sliceMin
+    else:
+      continue
+  return(bestSliceMinArg)
+
+
+def extract_zero_point(filename):
+ 
+  FileInUse = ec.check_file_in_use(filename)
+  if FileInUse:
+    print("{0} in use by PID {1}, skipping".format(filename,FileInUse))
+    return
+  elif os.path.exists(os.path.join(os.getcwd(),args.outputdir,''.join((filename[:-4],'.png')))):
+    print("{0} already analyzed, skipping".format(filename))
+    return
+  else:
+    print("Analyzing {0}".format(filename))
+
+ 
+  try:
+    filedata = sdf.SDF(filename).read()
+    x = filedata['Grid/Grid/X']
+    y = filedata['Grid/Grid/Y']
+    ex = filedata['Electric Field/Ex'].transpose()
+    dens = filedata['Derived/Number_Density'].transpose()
+  except:
+    print("Problem analyzing {0}, file corrupted or missing data".format(filename))
+    return
+
+  ymin_loc = np.abs(y).argmin()
+  lineout_ex = ex[ymin_loc]
+  slineout_ex = lineout_ex
+  time = filedata['Header']['time']
+  exargmin = find_first_minimum(lineout_ex)
+  exarg0 = find_zero_crossing(lineout_ex, exargmin, 0)
+  print("crossing x:",x[exarg0], x[exarg0+1])
+  print("crossing ex:",lineout_ex[exarg0], lineout_ex[exarg0+1])
+  ex0 = lineout_ex[exarg0]
+  x0 = interpolate_crossing((x[exarg0],lineout_ex[exarg0]),(x[exarg0+1],lineout_ex[exarg0+1]))
+  y0 = y[ymin_loc]
+
+  print("Zero in {0} at idx {1}: ({2},{3})".format(filename, exarg0, x0,y0))
+ 
+  plt.figure()
+  ax = []
+  ax.append(plt.subplot2grid((1,1), (0,0)))
+  im = []
+  im.append(ax[0].plot(x,slineout_ex))
+  im.append(ax[0].plot(x0,0,'k.',markersize=9))
+  im.append(ax[0].plot(x[exarg0],lineout_ex[exarg0],'k+',markersize=9))
+  im.append(ax[0].plot(x[exargmin],lineout_ex[exargmin],'r+',markersize=9))
+  
+  axLim = [abs(slineout_ex.min()) if abs(slineout_ex.min()) > abs(lineout_ex.max()) else abs(slineout_ex.max())]
+  ax[0].set_xlim(x[0],x[-1])
+  ax[0].set_ylim(-axLim[0],axLim[0])
+
+  savepath = os.path.join(args.outputdir,(filename[:-4]))
+  plt.savefig(savepath)
+  plt.close()
+
+
+  return((x0, time))
+
+def main():
+  global args
+  args = argument_parse()
+
+  print("Re-analyzing all files...\n")
+  ec.force_mkdir(args.outputdir) 
+ 
+
+  sdf_list = [f for f in os.listdir(os.getcwd()) if f.endswith('.sdf')]
+
+  zeropoints = map(extract_zero_point, sdf_list)
+
+  zeropoints = list(filter(None, zeropoints))
+
+  zeropoints.sort(key=lambda tup: tup[1])
+  
+  with open('zeropoints.pickle' ,'wb') as f:
+    pickle.dump(zeropoints, f)
+
+  print("Have {} datapoints.".format(len(zeropoints)))
+
+  zeropoints = np.asarray(zeropoints)
+  trimArgs = [0,-1]
+  if args.rangeMin:
+    trimArgs[0] = zeropoints[:,0].searchsorted(args.rangeMin)
+  if args.rangeMax:
+    trimArgs[1] = zeropoints[:,0].searchsorted(args.rangeMax)
+  zeropoints = zeropoints[trimArgs[0]:trimArgs[1]]
+  
+  xSorted = zeropoints[zeropoints[:,0].argsort()]
+  tSorted = zeropoints[zeropoints[:,1].argsort()]
+  interpXofT = si.InterpolatedUnivariateSpline(tSorted[:,1], tSorted[:,0], k=3)
+  interpTofX = si.InterpolatedUnivariateSpline(xSorted[:,0], xSorted[:,1], k=3)
+  interpBofT = interpXofT.derivative()
+ 
+  x = zeropoints[:,0]
+  t = zeropoints[:,1]
+
+  midPoints = np.linspace(args.rangeStart, args.rangeEnd, 50, endpoint=True)
+ 
+  avgBetas = args.oscLength / (interpTofX(midPoints + args.oscLength/2) 
+    - interpTofX(midPoints - args.oscLength/2))
+  
+  plotT = np.linspace(t.min(),t.max(),num=100,endpoint=True)
+  plotX = np.linspace(x.min(),x.max(),num=100,endpoint=True)
+
+  meanBeta = np.mean(avgBetas)/3e8
+  stdBeta = np.std(avgBetas)/3e8
+
+  meanGamma = 1/np.sqrt(1 - meanBeta**2)
+  errLoGamma = np.abs(1/np.sqrt(1 - (meanBeta - stdBeta)**2) - meanGamma)
+  errHiGamma = 1/np.sqrt(1 - (meanBeta + stdBeta)**2) - meanGamma
+
+  plt.figure()
+  ax = []
+  ax.append(plt.subplot2grid((1,1), (0,0)))
+#  ax.append(plt.subplot2grid((3,1), (0,0)))
+#  ax.append(plt.subplot2grid((3,1), (1,0)))
+#  ax.append(plt.subplot2grid((3,1), (2,0)))
+  im = []
+  im.append(ax[0].plot(plotX/1e-6, interpBofT(interpTofX(plotX)),'r-'))
+  im.append(ax[0].plot(midPoints/1e-6, avgBetas,'g.'))
+#  im.append(ax[1].plot(plotT, interpXofT(plotT), 'r-'))
+#  im.append(ax[1].plot(t, x, 'b--'))
+#  im.append(ax[2].plot(plotX, interpTofX(plotX),'r-'))
+#  im.append(ax[2].plot(x, t,'b--'))
+#  ax[0].set_xlim(0,t.max())
+#  ax[0].set_ylim(0,x.max())
+  ax[0].set_title(args.titleText)
+  ax[0].set_xlabel(r'$x\ \mathrm{\mu m}$')
+  ax[0].set_ylabel(r'$\beta_{ph}$')
+  ax[0].text(0.1,0.1,r'$<\beta_{{ph}}>={0:.3f}\pm {1:.3f}$ '
+    '$<\gamma_{{ph}}>={2:.3f}^{{+{3:.3f} }}_{{-{4:.3f} }}$ '
+    ''.format(meanBeta,stdBeta,meanGamma,errHiGamma,errLoGamma), 
+    verticalalignment='bottom', horizontalalignment='left',transform=ax[0].transAxes)
+  savepath = 'beta_tracking_{:.2e}-{:.2e}.png'.format(args.rangeStart,args.rangeEnd)
+  plt.savefig(savepath)
+  plt.close()
+
+  if args.iPython:
+    from IPython import embed
+    embed()
+
+
+if __name__ == '__main__':
+  main()

@@ -1,0 +1,453 @@
+#!/usr/bin/env python
+# vim: set fileencoding=UTF-8
+
+import re
+import os
+import sys
+import shutil
+from distutils import spawn
+import argparse
+import functools
+import math
+import code
+import subprocess as sp
+import time
+import multiprocessing as mp
+
+import epochtools_common as ec
+
+import matplotlib
+matplotlib.use('agg')  
+from matplotlib.colors import LogNorm, SymLogNorm
+from mpl_toolkits.axes_grid1 import make_axes_locatable
+from matplotlib.ticker import MaxNLocator, NullLocator, FixedLocator
+import matplotlib.pyplot as plt
+import numpy as np
+import sdf
+
+def timeprint(*args):
+  data = [[time.clock()],[": "],args]
+  data = ''.join(map(str,[l for s in data for l in s]))
+  print(data)
+
+class PlotParams():
+  def __init__(self,xmin=None,xmax=None,xvar=None,
+                    ymin=None,ymax=None,yvar=None,
+                    zmin=None,zmax=None,zvar=None,
+                    cmin=None,cmax=None,cvar=None):
+    self.xmin=xmin
+    self.xmax=xmax
+    self.xvar=xvar
+    self.ymin=ymin
+    self.ymax=ymax
+    self.yvar=yvar
+    self.zmin=zmin
+    self.zmax=zmax
+    self.zvar=zvar
+    self.cmin=cmin
+    self.cmax=cmax
+    self.cvar=cvar
+
+  def list_lims(self):
+    return([self.xmin,self.xmax,self.ymin,self.ymax])
+
+def argument_parse():
+
+# Set up parser and global options
+  parser = argparse.ArgumentParser(description='Find density FFT')
+  parser.add_argument('fieldfile',type=str,
+    metavar="fieldfile", help="field file to analyze")
+  parser.add_argument('partfile',type=str,
+    metavar="partfile", help="particle file to analyze")
+  parser.add_argument('component',choices=['Px','Py','Pz'],
+    metavar="p?", help="momentum component to analyze")
+  parser.add_argument('slicesize',type=float,
+    metavar="slicesize", help="size of slice in x")
+  parser.add_argument('--outputprefix','-p',dest='outputPrefix',type=str,
+    metavar="prefix", help="prefix to apply to output file(s)")
+  parser.add_argument('--outputdir','-d',dest='outputDir',type=str,default='',
+    metavar="dir", help="directory to hold output files, defaults to NONE")
+  parser.add_argument('--species',default='electron',
+    help="Species for phase space")
+  parser.add_argument('--pbins',default=100,type=int,dest='pBins',
+    metavar="pbins",help="number of histogram bins for number density")
+  parser.add_argument('--plim',type=float,nargs=2,default=(-5,5),
+    metavar=("pxmin","pxmax"),help="Fixed scale for LH phase space plot "
+    "defaults to -5, 5 because (reasons)")
+  parser.add_argument('--pdrange',type=float,nargs=2,default=(None,None),
+    dest="pDRange",metavar=("pdmin","pdmax"),
+    help="Fix scale for phase space particle density")
+  parser.add_argument('--vmlock',action='store_true',
+    help="Force locking of file into virtual memory, (calls 'sudo vmtouch', "
+    "which must execute succesfully without a password.")
+  parser.add_argument('--numprocs','-n',type=int,default=1,dest='procs',
+    help="number of analysis threads to run (beware I/O bottleneck though!")
+  parser.add_argument('--verbose','-v',action='store_true',
+    help="give verbose (debugging) output")
+
+  return(parser.parse_args())
+
+def debug(*debuginfo):
+  if args.verbose:
+    print(''.join(map(str,debuginfo)))
+
+
+def main():
+
+  global args
+  args = argument_parse()
+
+  partFile = args.partfile
+  fieldFile = args.fieldfile
+
+  outputPrefix = ''
+  if args.outputPrefix:
+    outputPrefix = args.outputPrefix
+
+  outputDir = ''
+  if args.outputDir:
+    outputDir = args.outputDir
+    ec.force_mkdir(outputDir)
+    outputDir = ''.join((outputDir,'/'))
+
+
+  if not os.path.exists(os.path.join(os.getcwd(),partFile)):
+    print("File {0} does not exist!".format(partFile))
+    return
+  if not os.path.exists(os.path.join(os.getcwd(),fieldFile)):
+    print("File {0} does not exist!".format(fieldFile))
+    return
+
+  if args.vmlock:
+    try:
+      null = open(os.devnull, 'w')
+      if partFile == fieldFile:
+        vmLocker = sp.Popen(['sudo','vmtouch','-m20G','-t',fieldFile],
+          stdout=null, stderr=null)
+        vmLocker.wait()
+        vmLocker = sp.Popen(['sudo','vmtouch','-m20G','-l',fieldFile],
+          stdout=null, stderr=null)
+        print("{0} cached and locked in virtual memory".format(fieldFile))
+      else:
+        vmLocker = sp.Popen(['sudo','vmtouch','-m20G','-t',fieldFile,partFile],
+          stdout=null, stderr=null)
+        vmLocker.wait()
+        vmLocker = sp.Popen(['sudo','vmtouch','-m20G','-l',fieldFile,partFile],
+          stdout=null, stderr=null)
+        print("{0},{1} cached and locked in virtual memory".format(fieldFile,
+          partFile))
+    except Exception as err:
+      debug(err)
+      print("Failed to vmlock files, are you sure you can run vmtouch?")
+
+  timeprint("Loading Data")
+
+  try:
+    partdata = sdf.SDF(partFile).read()
+    partX = partdata['Grid/Particles/{0}/X'.format(args.species)]
+    debug('loaded partX')
+    partY = partdata['Grid/Particles/{0}/Y'.format(args.species)]
+    debug('loaded partY')
+    partP = partdata['Particles/{0}/{1}'.format(args.component,args.species)]
+    debug('loaded partP')
+    partW = partdata['Particles/Weight/{0}'.format(args.species)]
+    debug('loaded partW')
+  except Exception as err:
+    print(err)
+    print("Problem analyzing {0}, file corrupted or missing data".format(partFile))
+    return
+
+  try:
+    fielddata = sdf.SDF(fieldFile).read()
+    dens=fielddata['Derived/Number_Density/{0}'.format(args.species)]
+    debug('loaded density')
+    gridNodesX = fielddata['Grid/Grid_node/X']
+    debug('loaded gridNodesX')
+    gridNodesY = fielddata['Grid/Grid_node/Y']
+    debug('loaded gridNodesY')
+    gridX = fielddata['Grid/Grid/X']
+    debug('loaded gridX')
+    gridY = fielddata['Grid/Grid/Y']
+    debug('loaded gridY')
+    eX = fielddata['Electric Field/Ex']
+    debug('loaded eX')
+    eY = fielddata['Electric Field/Ey']
+    debug('loaded eY')
+
+  except:
+    print("Problem analyzing {0}, "
+      "file corrupted or missing data".format(fieldFile))
+    return
+
+  print(dens)
+
+  timeprint("stacking...")
+  partarray = np.column_stack((partX,partY,partP,partW))
+  #code.interact(local=locals())
+  #print(partarray.shape)
+  #print(partarray)
+  timeprint("sorting...")
+  partarray = partarray[partarray[:,0].argsort()]
+  #code.interact(local=locals())
+  #print(partarray)
+  timeprint("sort done")
+
+  print("Creating iteration data")
+  component_expr=(''.join((args.component[0],'_',args.component[1]))).lower()
+  rangeXMin = np.arange(gridX.min(),gridX.max(),args.slicesize)
+  rangeXMax = rangeXMin + args.slicesize
+  filename = ["{0}{1}{2:.2e}-{3:.2e}.png".format(outputDir,outputPrefix,xmin,xmax)
+    for xmin, xmax in zip(rangeXMin,rangeXMax)]
+  counter = range(1,len(rangeXMin)+1)
+  total = [len(rangeXMin)]*len(rangeXMin)
+  component = [component_expr]*len(rangeXMin)
+  data = zip(rangeXMin,rangeXMax,filename,counter,total,component)
+
+  workerPool = mp.Pool(processes=args.procs)
+  sharedData = {'partArray': partarray,
+                            'gridX' : gridX,
+                            'gridY' : gridY,
+                            'gridNodesX' : gridNodesX,
+                            'gridNodesY' : gridNodesY,
+                            'eX' : eX,
+                            'eY' : eY,
+                            'dens' : dens}
+  
+  plotPart = functools.partial(plot,sharedData=sharedData)
+
+  #plots = workerPool.map(plotPart, data)
+  plots = map(plotPart, data)
+
+  if args.vmlock:
+    try:
+      vmLocker.terminate()
+    except:
+      pass
+
+  return(0)
+
+
+def plot(data,sharedData=None):
+
+  plotrange = (data[0],data[1])
+  filename = data[2]
+  counter = data[3]
+  total = data[4]
+  component_expr=[5]
+
+  print("[{0}/{1}] {2}".format(counter,total,filename))
+
+  timeprint("Selecting particles")
+
+# set limits on particles in phase space
+  print(sharedData['partArray'].shape)
+  argmin = np.searchsorted(sharedData['partArray'][:,0], [min(plotrange)])[0]
+  print(argmin)
+  argmax = np.searchsorted(sharedData['partArray'][:,0], [max(plotrange)])[0]
+  print(argmax)
+  datasubset = sharedData['partArray'][argmin:argmax,:]
+  print(datasubset.shape)
+  partX = datasubset[:,0]
+  partY = datasubset[:,1]
+  partP = datasubset[:,2]
+  partW = datasubset[:,3]
+
+  timeprint("Binning densities for histogram")
+
+# create 2d histogram binned data for densities
+  if partP.min() == partP.max():
+    pBins = np.linspace(-1,1,args.pBins)
+  else:
+    pBins = np.linspace(partP.min(),partP.max(),args.pBins)
+  phaseDensHist, binsY, binsP = np.histogram2d(partY,partP,
+    bins=[sharedData['gridNodesY'],pBins],weights=partW)
+
+  binArea = (binsY[1]-binsY[0]) * args.slicesize
+
+  phaseDensHist /= binArea
+
+  timeprint("Linking back to particles")
+
+# link histogram data back to particledata
+  partDensX = np.searchsorted(binsY,partY) - 1 #searchsorted returns index to
+  partDensP = np.searchsorted(binsP,partP) - 1 #insert before, so -1 to get
+                                               # matching index
+  partDens = phaseDensHist[partDensX,partDensP]
+
+
+  timeprint("slicing data")
+
+# grab the slice density for lineout
+  
+  midpoint = 0.5*(max(plotrange) + min(plotrange))
+  midpointarg = np.argmin(np.abs(sharedData['gridX'] - midpoint))
+  sliceDens = sharedData['dens'][midpointarg,:]
+  sliceEX = sharedData['eX'][midpointarg,:]
+  sliceEY = sharedData['eY'][midpointarg,:]
+
+  timeprint("spec'ing plots")
+
+### density plot
+  densityPlot = PlotParams(xmin=sharedData['gridNodesY'].min(),
+                           xmax=sharedData['gridNodesY'].max(),
+                           ymin=sharedData['gridNodesX'].min(),
+                           ymax=sharedData['gridNodesX'].max(),
+                           cvar=np.flipud(sharedData['dens']))
+
+### full phase space plot
+
+  phasePlot = PlotParams(xmin=sharedData['gridNodesY'].min(),
+                         xmax=sharedData['gridNodesY'].max(),
+                         xvar=partY,
+                         yvar=partP,
+                         cmin=args.pDRange[0],
+                         cmax=args.pDRange[1],
+                         cvar=partDens)
+
+### density lineout plot
+
+  densLineout = PlotParams(xvar=sharedData['gridY'],
+                           yvar=sliceDens,
+                           ymin=sharedData['dens'].min(),
+                           ymax=sharedData['dens'].max())
+
+### Ex lineout plot
+
+  eXLineout = PlotParams(xvar=sharedData['gridY'],
+                         yvar=sliceEX,
+                         ymin=sharedData['eX'].min(),
+                         ymax=sharedData['eX'].max())
+
+#### Ey lineout plot
+
+  eYLineout = PlotParams(xvar=sharedData['gridY'],
+                         yvar=sliceEY,
+                         ymin=0.1*sharedData['eY'].min(),
+                         ymax=0.1*sharedData['eY'].max())
+
+  timeprint("rescaling data")
+
+# normalise momentum to mc, lengths to omega
+  me = 9.10938291e-31
+  c0 = 299792458
+  omegal = 2 * math.pi * c0 / 800e-9 
+  omega = ec.plasma_freq(0.02*ec.critical_density(omegal))
+  lmda = 2 * math.pi * c0 / omega
+
+  # keep hold of SI values for title
+
+  siXmin = densityPlot.xmin / 1e-6
+  siXmax = densityPlot.xmax / 1e-6
+
+  #convert all units to normalised
+
+  densityPlot.xmin /= lmda
+  densityPlot.xmax /= lmda
+  densityPlot.ymin /= lmda
+  densityPlot.ymax /= lmda
+
+  phasePlot.xvar = phasePlot.xvar / lmda
+  phasePlot.yvar = phasePlot.yvar / (me * c0)
+
+# also rescale plotrange
+
+  plotrange = (min(plotrange)/lmda,max(plotrange)/lmda)
+
+
+#  nplotpartx = plotpartx / lmda
+#  nplotparty = plotparty / lmda
+#  nxmin = densityPlot.xmin / lmda
+#  nxmax = densityPlot.xmax / lmda
+#  nymin = densityPlot.ymin / lmda
+#  nymax = densityPlot.ymax / lmda
+#  nplotxmin = plotxmin / lmda
+#  nplotxmax = plotxmax / lmda
+#  rplotxmin = plotxmin / 1e-6
+#  rplotxmax = plotxmax / 1e-6
+
+
+  timeprint("plot setup")
+
+# set up figure, axes, colormaps
+  plt.figure()
+  ax = []
+  plotGrid=(2,3) #rows,cols
+  plots= [ (x,y) for x in range(0,plotGrid[0]) for y in range(0,plotGrid[1])]
+  ax = [(plt.subplot2grid(plotGrid, plot),[]) for plot in plots]
+  gc = plt.get_cmap('gnuplot')
+  gy = plt.get_cmap('Greys')
+  plt.gcf().suptitle("Phase space slice from "
+    "${0:.2f}\ \lambda_p$ --  ${1:.2f}\ \lambda_p$"
+    "$({2:.2e}\mathrm{{\mu m}}$ --  ${3:.2e}\mathrm{{\mu m}})$"
+    "".format(densityPlot.xmin,densityPlot.xmax,siXmin,siXmax))
+  plt.gcf().set_size_inches(16,9)
+
+  timeprint("phase space")
+
+# plot full phase space
+  ax[0][1].append(ax[0][0].scatter(phasePlot.xvar, phasePlot.yvar,
+    c=phasePlot.cvar, s=1, facecolor='0', cmap=gc, lw=0,hatch='',
+    norm=LogNorm(vmin=phasePlot.cmin,vmax=phasePlot.cmax)))
+  divider = make_axes_locatable(ax[0][0])
+  cax = divider.append_axes('right', size='5%', pad=0.05)
+  ax[0][1].append(plt.colorbar(ax[0][1][0], cax=cax))
+  ax[0][1][-1].set_label("phase space density $(m^{-1}(m_ec)^{-1})$")
+  ax[0][0].set_xlabel("$y\ (\lambda_p)$")
+  ax[0][0].set_ylabel("${0}\ (m_e c)$".format(component_expr))
+
+  timeprint("crop phase space")
+# plot full phase space
+  ax[1][1].append(ax[1][0].scatter(phasePlot.xvar, phasePlot.yvar,
+    c=phasePlot.cvar, s=1, facecolor='0', cmap=gc, lw=0,hatch='',
+    norm=LogNorm(vmin=phasePlot.cmin,vmax=phasePlot.cmax)))
+  divider = make_axes_locatable(ax[1][0])
+  cax = divider.append_axes('right', size='5%', pad=0.05)
+  ax[1][1].append(plt.colorbar(ax[0][1][0], cax=cax))
+  ax[1][1][-1].set_label("phase space density $(m^{-1}(m_ec)^{-1})$")
+  ax[1][0].set_ylim(args.plim[0],args.plim[1])
+  ax[1][0].set_xlabel("$y\ (\lambda_p)$")
+  ax[1][0].set_ylabel("${0}\ (m_e c)$".format(component_expr))
+
+  timeprint("density image")
+# plot density
+  ax[2][1].append(ax[2][0].imshow(densityPlot.cvar,aspect='auto',interpolation='none',
+    extent=densityPlot.list_lims(),cmap=gc, vmin=5e24, vmax=5e26))
+  ax[2][1].append(ax[2][0].axhspan(densityPlot.ymin,min(plotrange),color='white',alpha=0.5))
+  ax[2][1].append(ax[2][0].axhspan(max(plotrange),densityPlot.ymax,color='white',alpha=0.5))
+  ax[2][0].set_ylim(densityPlot.ymin,densityPlot.ymax)
+  divider = make_axes_locatable(ax[2][0])
+  cax = divider.append_axes('right', size='5%', pad=0.05)
+  plt.colorbar(ax[2][1][0], cax=cax)
+  ax[2][0].set_xlabel("$y\ (\lambda_p)$")
+  ax[2][0].set_ylabel("$x\ (\lambda_p)$")
+
+
+  timeprint("density lineout")
+# plot density
+  ax[3][1].append(ax[3][0].semilogy(densLineout.xvar, densLineout.yvar))
+  ax[3][0].set_ylim(densLineout.ymin,densLineout.ymax)
+  ax[3][0].set_xlabel("$y\ (\lambda_p)$")
+  ax[3][0].set_ylabel("$n_e\ (\mathrm{m^{-3}})$")
+
+  timeprint("ex lineout")
+# plot Ex
+  ax[4][1].append(ax[4][0].plot(eXLineout.xvar, eXLineout.yvar))
+  ax[4][0].set_ylim(eXLineout.ymin,eXLineout.ymax)
+  ax[4][0].set_xlabel("$y\ (\lambda_p)$")
+  ax[4][0].set_ylabel("$E_x\ (\mathrm{Vm^{-1}})$")
+
+  timeprint("ey lineout")
+# plot Ey
+  ax[5][1].append(ax[5][0].plot(eYLineout.xvar, eYLineout.yvar))
+  ax[5][0].set_ylim(eYLineout.ymin,eYLineout.ymax)
+  ax[5][0].set_xlabel("$y\ (\lambda_p)$")
+  ax[5][0].set_ylabel("$E_y\ (\mathrm{Vm^{-1}})$")
+
+  timeprint("saving plot")
+# save plot and close
+  plt.savefig(filename,format='png')#,dpi=300)
+  plt.close()
+
+   
+if __name__ == '__main__':
+  main()

@@ -1,0 +1,648 @@
+#!/usr/bin/env python2
+# vim: set fileencoding=UTF-8
+
+import os
+import sys
+from distutils import spawn
+import argparse
+import functools
+import math
+import subprocess as sp
+import time
+import multiprocessing as mp
+import copy
+
+import epochtools_common as ec
+from pyutils.debugging import timeprint, debug
+
+import matplotlib
+matplotlib.use('agg')  
+from matplotlib.colors import LogNorm, SymLogNorm
+from mpl_toolkits.axes_grid1 import make_axes_locatable
+from matplotlib.ticker import MaxNLocator, NullLocator, FixedLocator
+import matplotlib.pyplot as plt
+import matplotlib.lines as mlines
+import numpy as np
+import numpy.fft as nf
+import sdf
+
+class PlotParams():
+  def __init__(self,xmin=None,xmax=None,xvar=None,
+                    ymin=None,ymax=None,yvar=None,
+                    zmin=None,zmax=None,zvar=None,
+                    cmin=None,cmax=None,cvar=None):
+    self.xmin=xmin
+    self.xmax=xmax
+    self.xvar=xvar
+    self.ymin=ymin
+    self.ymax=ymax
+    self.yvar=yvar
+    self.zmin=zmin
+    self.zmax=zmax
+    self.zvar=zvar
+    self.cmin=cmin
+    self.cmax=cmax
+    self.cvar=cvar
+
+  def list_lims(self):
+    return([self.xmin,self.xmax,self.ymin,self.ymax])
+
+
+def defaulter(args,default,evaluator):
+  
+  try:
+    res = evaluator(args)
+  except:
+    res = default
+  return(res)
+
+
+def argument_parse():
+
+# Set up parser and global options
+  parser = argparse.ArgumentParser(description='Find density FFT')
+  parser.add_argument('fieldfile',type=str,
+    metavar="fieldfile", help="field file to analyze")
+  parser.add_argument('partfile',type=str,
+    metavar="partfile", help="particle file to analyze")
+  parser.add_argument('component',choices=['Px','Py','Pz'],
+    metavar="p?", help="momentum component to analyze")
+  parser.add_argument('slicesize',type=float,
+    metavar="slicesize", help="size of slice in x")
+  parser.add_argument('plasmane',type=float,
+    metavar="plasma_ne", help="avg plasma density (in m^-3)")
+  parser.add_argument('--outputprefix','-p',dest='outputPrefix',type=str,
+    metavar="prefix", help="prefix to apply to output file(s)")
+  parser.add_argument('--outputdir','-d',dest='outputDir',type=str,default='',
+    metavar="dir", help="directory to hold output files, defaults to NONE")
+  parser.add_argument('--species',default='electron',
+    help="Species for phase space")
+  parser.add_argument('--pbins',default=100,type=int,dest='pBins',
+    metavar="pbins",help="number of histogram bins for number density")
+  parser.add_argument('--plim',type=float,nargs=2,default=(-5,5),dest='pLim',
+    metavar=("pxmin","pxmax"),help="Fixed scale for LH phase space plot "
+    "defaults to -5, 5 because (reasons)")
+  parser.add_argument('--xrange',type=float,nargs=2,
+    dest="xrange",metavar=("xmin","xmax"),
+    help="Zoom to xmin-xmax")
+  parser.add_argument('--yrange',type=float,nargs=2,
+    dest="yrange",metavar=("ymin","ymax"),
+    help="Zoom to ymin-ymax")
+  parser.add_argument('--exrange',type=float,nargs=2,default=(None,None),
+    dest="eXRange",metavar=("exmin","exmax"),
+    help="Fix scale for E_x")
+  parser.add_argument('--eyrange',type=float,nargs=2,default=(None,None),
+    dest="eYRange",metavar=("eymin","eymax"),
+    help="Fix scale for E_y")
+  parser.add_argument('--bzrange',type=float,nargs=2,default=(None,None),
+    dest="bZRange",metavar=("bzmin","bzmax"),
+    help="Fix scale for B_z")
+  parser.add_argument('--drange',type=float,nargs=2,default=(None,None),
+    dest="dRange",metavar=("dmin","dmax"),
+    help="Fix scale for particle number density")
+  parser.add_argument('--pdrange',type=float,nargs=2,default=(None,None),
+    dest="pDRange",metavar=("pdmin","pdmax"),
+    help="Fix scale for phase space particle density")
+  parser.add_argument('--vmlock',action='store_true',
+    help="Force locking of file into virtual memory, (calls 'sudo vmtouch', "
+    "which must execute succesfully without a password.")
+  parser.add_argument('--numprocs','-n',type=int,default=1,dest='procs',
+    help="number of analysis threads to run (beware I/O bottleneck though!")
+  parser.add_argument('--verbose','-v',action='store_true',
+    help="give verbose (debugging) output")
+
+  return(parser.parse_args())
+
+
+def main():
+
+  global args
+  args = argument_parse()
+
+  partFile = args.partfile
+  fieldFile = args.fieldfile
+
+  outputPrefix = ''
+  if args.outputPrefix:
+    outputPrefix = args.outputPrefix
+
+  outputDir = ''
+  if args.outputDir:
+    outputDir = args.outputDir
+    ec.force_mkdir(outputDir)
+    outputDir = ''.join((outputDir,'/'))
+
+  if not os.path.exists(os.path.join(os.getcwd(),partFile)):
+    print("File {0} does not exist!".format(partFile))
+    return
+  if not os.path.exists(os.path.join(os.getcwd(),fieldFile)):
+    print("File {0} does not exist!".format(fieldFile))
+    return
+
+  if args.vmlock:
+    try:
+      null = open(os.devnull, 'w')
+      if partFile == fieldFile:
+        vmLocker = sp.Popen(['sudo','vmtouch','-m20G','-t',fieldFile],
+          stdout=null, stderr=null)
+        vmLocker.wait()
+        vmLocker = sp.Popen(['sudo','vmtouch','-m20G','-l',fieldFile],
+          stdout=null, stderr=null)
+        print("{0} cached and locked in virtual memory".format(fieldFile))
+      else:
+        vmLocker = sp.Popen(['sudo','vmtouch','-m20G','-t',fieldFile,partFile],
+          stdout=null, stderr=null)
+        vmLocker.wait()
+        vmLocker = sp.Popen(['sudo','vmtouch','-m20G','-l',fieldFile,partFile],
+          stdout=null, stderr=null)
+        print("{0},{1} cached and locked in virtual memory".format(fieldFile,
+          partFile))
+    except Exception as err:
+      debug(err)
+      print("Failed to vmlock files, are you sure you can run vmtouch?")
+
+  timeprint("Loading Data")
+
+  try:
+    partdata = sdf.SDF(partFile).read()
+    partX = partdata['Grid/Particles/{0}/X'.format(args.species)]
+    debug('loaded partX')
+    partY = partdata['Grid/Particles/{0}/Y'.format(args.species)]
+    debug('loaded partY')
+    partP = partdata['Particles/{0}/{1}'.format(args.component,args.species)]
+    debug('loaded partP')
+    partW = partdata['Particles/Weight/{0}'.format(args.species)]
+    debug('loaded partW')
+  except Exception as err:
+    print(err)
+    print("Problem analyzing {0}, file corrupted or missing data".format(partFile))
+    return
+
+  try:
+    fielddata = sdf.SDF(fieldFile).read()
+    dens=fielddata['Derived/Number_Density/{0}'.format(args.species)]
+    debug('loaded density')
+    gridNodesX = fielddata['Grid/Grid_node/X']
+    debug('loaded gridNodesX')
+    gridNodesY = fielddata['Grid/Grid_node/Y']
+    debug('loaded gridNodesY')
+    gridX = fielddata['Grid/Grid/X']
+    debug('loaded gridX')
+    gridY = fielddata['Grid/Grid/Y']
+    debug('loaded gridY')
+    eX = fielddata['Electric Field/Ex']
+    debug('loaded eX')
+    eY = fielddata['Electric Field/Ey']
+    debug('loaded eY')
+    bZ = fielddata['Magnetic Field/Bz']
+    debug('loaded bZ')
+
+  except:
+    print("Problem analyzing {0}, "
+      "file corrupted or missing data".format(fieldFile))
+    return
+
+  timeprint("stacking...")
+  partarray = np.column_stack((partX,partY,partP,partW))
+
+  if args.xrange:
+    rangemin = max((partX.min(),min(args.xrange)))
+    rangemax = min((partX.max(),max(args.xrange)))
+    timeprint("sorting for range limit...")
+    partarray = partarray[partarray[:,0].argsort()]
+    argmin = np.searchsorted(partarray[:,0], [rangemin])[0]
+    argmax = np.searchsorted(partarray[:,0], [rangemax])[0]
+    partarray = partarray[argmin:argmax,:]
+
+    gridmin = np.argmin(np.abs(gridX - rangemin))
+    gridmax = np.argmin(np.abs(gridX - rangemax))
+
+    gridX = gridX[gridmin:gridmax]
+    gridNodesX = gridNodesX[gridmin:gridmax+1]
+    dens = dens[gridmin:gridmax,:]
+    eX = eX[gridmin:gridmax,:]
+    eY = eY[gridmin:gridmax,:]
+    bZ = bZ[gridmin:gridmax,:]
+
+  timeprint("sorting for slicing...")
+  partarray = partarray[partarray[:,1].argsort()]
+
+  if args.yrange:
+    rangemin = max((partY.min(),min(args.yrange)))
+    rangemax = min((partY.max(),max(args.yrange)))
+    argmin = np.searchsorted(partarray[:,1], [rangemin])[0]
+    argmax = np.searchsorted(partarray[:,1], [rangemax])[0]
+    partarray = partarray[argmin:argmax,:]
+
+    gridmin = np.argmin(np.abs(gridY - rangemin))
+    gridmax = np.argmin(np.abs(gridY - rangemax))
+
+    gridY = gridY[gridmin:gridmax]
+    gridNodesY = gridNodesY[gridmin:gridmax+1]
+    dens = dens[:,gridmin:gridmax]
+    eX = eX[:,gridmin:gridmax]
+    eY = eY[:,gridmin:gridmax]
+    bZ = bZ[:,gridmin:gridmax]
+
+  timeprint("Creating iteration data")
+  component_expr=(''.join((args.component[0],'_',args.component[1]))).lower()
+  rangeYMin = np.arange(gridY.min(),gridY.max(),args.slicesize)
+  rangeYMax = rangeYMin + args.slicesize
+  counter = range(1,len(rangeYMin)+1)
+  filename = ["{0}{1:03}_{2}{3:.3e}-{4:.3e}.png".format(outputDir,count,outputPrefix,ymin,ymax)
+    for count, ymin, ymax in zip(counter,rangeYMin,rangeYMax)]
+  total = [len(rangeYMin)]*len(rangeYMin)
+  component = [component_expr]*len(rangeYMin)
+# set limits on particles in phase space
+  partSubArrays = []
+  for plotRange in zip(rangeYMin,rangeYMax):
+    argmin = np.searchsorted(partarray[:,1], [min(plotRange)])[0]
+    argmax = np.searchsorted(partarray[:,1], [max(plotRange)])[0]
+    partSubArrays.append(partarray[argmin:argmax,:])
+
+  data = zip(rangeYMin,rangeYMax,filename,counter,total,component,partSubArrays)
+
+#  workerPool = mp.Pool(processes=args.procs)
+  sharedData = {'gridX' : gridX,
+                'gridY' : gridY,
+                'gridNodesX' : gridNodesX,
+                'gridNodesY' : gridNodesY,
+                'eX' : eX,
+                'eY' : eY,
+                'bZ' : bZ,
+                'dens' : dens}
+  
+  plotPart = functools.partial(plot,sharedData=sharedData)
+
+#  plots = workerPool.map(plotPart, data)
+  plots = list(map(plotPart, data))
+
+  if args.vmlock:
+    try:
+      vmLocker.terminate()
+    except:
+      pass
+
+  return(0)
+
+
+def plot(data,sharedData=None):
+
+  plotRange = (data[0],data[1])
+  filename = data[2]
+  counter = data[3]
+  total = data[4]
+  component_expr = data[5]
+  datasubset = data[6]
+
+#  print("[{0}/{1}] {2}".format(counter,total,filename))
+
+  partX = datasubset[:,0]
+  partY = datasubset[:,1]
+  partP = datasubset[:,2]
+  partW = datasubset[:,3]
+
+# create 2d histogram binned data for densities
+  if partP.min() == partP.max():
+    pBins = np.linspace(-1,1,args.pBins)
+  else:
+    pBins = np.linspace(partP.min(),partP.max(),args.pBins)
+  phaseDensHist, binsX, binsP = np.histogram2d(partX,partP,
+    bins=[sharedData['gridNodesX'],pBins],weights=partW)
+
+  binArea = (binsX[1]-binsX[0]) * args.slicesize
+
+  phaseDensHist /= binArea
+
+# link histogram data back to particledata
+  partDensX = (np.searchsorted(binsX[:-2],partX)) - 1 #searchsorted returns index to
+  partDensP = (np.searchsorted(binsP[:-2],partP)) - 1 #insert before, so -1 to get
+                                               # matching index
+  partDens = phaseDensHist[partDensX,partDensP]
+
+# grab the slice density for lineout
+  
+  midpoint = 0.5*(max(plotRange) + min(plotRange))
+  midpointarg = np.argmin(np.abs(sharedData['gridY'] - midpoint))
+  sliceDens = sharedData['dens'][:,midpointarg]
+  sliceEX = sharedData['eX'][:,midpointarg]
+  sliceEY = sharedData['eY'][:,midpointarg]
+  sliceBZ = sharedData['bZ'][:,midpointarg]
+
+# normalise momentum to mc, lengths to omega
+  me = 9.10938291e-31
+  c0 = 299792458
+  omegal = 2 * math.pi * c0 / 800e-9 
+  omega = ec.plasma_freq(args.plasmane)
+  lmda = 2 * math.pi * c0 / omega
+
+# keep hold of SI values for title
+
+  siXmin = sharedData['gridNodesX'].min() / 1e-6
+  siXmax = sharedData['gridNodesX'].max() / 1e-6
+
+#convert all units to normalised
+
+  scaledGridNodesX = sharedData['gridNodesX'] / lmda
+  scaledGridNodesY = sharedData['gridNodesY'] / lmda
+  scaledGridX = sharedData['gridX'] / lmda
+  scaledGridY = sharedData['gridY'] / lmda
+
+  partX = partX / lmda
+  partY = partY / lmda
+  partP = partP/ (me * c0)
+
+# also rescale plotRange
+
+  plotRange = (min(plotRange)/lmda,max(plotRange)/lmda)
+
+  xskip, yskip = (1,1)
+  if sharedData['dens'].shape[0] > 1000 :
+    xskip = int(sharedData['dens'].shape[0] / 1000)
+  if sharedData['dens'].shape[1] > 1000 :
+    yskip = int(sharedData['dens'].shape[1] / 1000)
+
+  dens = sharedData['dens'][::xskip,::yskip]
+
+# compute FFTs
+  
+  densFFT = np.absolute(nf.rfft(sliceDens))
+  exFFT = np.absolute(nf.rfft(sliceEX))
+  eyFFT = np.absolute(nf.rfft(sliceEY))
+  bzFFT= np.absolute(nf.rfft(sliceBZ))
+  fftFreq = nf.rfftfreq(sliceBZ.size,
+            sharedData['gridNodesX'][1]-sharedData['gridNodesX'][0])
+
+#Separate plot parameters here for readability
+
+### density plot
+  densityPlot = PlotParams(xmin=scaledGridNodesX.min(),
+                           xmax=scaledGridNodesX.max(),
+                           ymin=scaledGridNodesY.min(),
+                           ymax=scaledGridNodesY.max(),
+                           cvar=np.rot90(dens),
+                           cmin=defaulter(args.dRange,sharedData['dens'].min(),min),
+                           cmax=defaulter(args.dRange,sharedData['dens'].max(),max))
+
+### full phase space plot
+
+  phasePlot = PlotParams(xmin=scaledGridNodesX.min(),
+                         xmax=scaledGridNodesX.max(),
+                         xvar=partX,
+                         ymin=partP.min(),
+                         ymax=partP.max(),
+                         yvar=partP,
+                         cmin=defaulter(args.pDRange,partP.min(),min),
+                         cmax=defaulter(args.pDRange,partP.max(),max),
+                         cvar=partDens)
+
+### zoomed phase space plot is a copy of phasePlot
+
+  phaseZoomPlot = copy.deepcopy(phasePlot)
+  phaseZoomPlot.ymin = min(args.pLim)
+  phaseZoomPlot.ymax = max(args.pLim)
+
+### density lineout plot
+
+  densLineout = PlotParams(xmin=scaledGridNodesX.min(),
+                           xmax=scaledGridNodesX.max(),
+                           xvar=scaledGridX,
+                           yvar=sliceDens,
+                           ymin=defaulter(args.dRange,sharedData['dens'].min(),min),
+                           ymax=defaulter(args.dRange,sharedData['dens'].max(),max))
+
+### Ex lineout plot
+
+  eXLineout = PlotParams(xmin=scaledGridNodesX.min(),
+                         xmax=scaledGridNodesX.max(),
+                         xvar=scaledGridX,
+                         yvar=sliceEX,
+                         ymin=defaulter(args.eXRange,sharedData['eX'].min(),min),
+                         ymax=defaulter(args.eXRange,sharedData['eX'].max(),max))
+
+#### Ey lineout plot
+
+  eYLineout = PlotParams(xmin=scaledGridNodesX.min(),
+                         xmax=scaledGridNodesX.max(),
+                         xvar=scaledGridX,
+                         yvar=sliceEY,
+                         ymin=defaulter(args.eYRange,sharedData['eY'].min(),min),
+                         ymax=defaulter(args.eYRange,sharedData['eY'].max(),max))
+
+#### BZ lineout plot
+
+  bZLineout = PlotParams(xmin=scaledGridNodesX.min(),
+                         xmax=scaledGridNodesX.max(),
+                         xvar=scaledGridX,
+                         yvar=sliceBZ,
+                         ymin=defaulter(args.bZRange,sharedData['bZ'].min(),min),
+                         ymax=defaulter(args.bZRange,sharedData['bZ'].max(),max))
+
+#### density fft plot
+
+  densFFTPlot = PlotParams(xmin=fftFreq.min(),
+                         xmax=fftFreq.max(),
+                         xvar=fftFreq,
+                         yvar=densFFT,
+                         ymin=densFFT.min(),
+                         ymax=densFFT.max())
+
+#### ex fft plot
+
+  eXFFTPlot = PlotParams(xmin=fftFreq.min(),
+                         xmax=fftFreq.max(),
+                         xvar=fftFreq,
+                         yvar=exFFT,
+                         ymin=exFFT.min(),
+                         ymax=exFFT.max())
+
+#### ey fft plot
+
+  eYFFTPlot = PlotParams(xmin=fftFreq.min(),
+                         xmax=fftFreq.max(),
+                         xvar=fftFreq,
+                         yvar=eyFFT,
+                         ymin=eyFFT.min(),
+                         ymax=eyFFT.max())
+
+#### bz fft plot
+
+  bZFFTPlot = PlotParams(xmin=fftFreq.min(),
+                         xmax=fftFreq.max(),
+                         xvar=fftFreq,
+                         yvar=bzFFT,
+                         ymin=bzFFT.min(),
+                         ymax=bzFFT.max())
+
+
+# set up figure, axes, colormaps
+  plt.figure()
+  ax = []
+  plotGrid=(2,4) #rows,cols
+  plots= [ (x,y) for x in range(0,plotGrid[0]) for y in range(0,plotGrid[1])]
+  ax = [(plt.subplot2grid(plotGrid, plot),[]) for plot in plots]
+  gc = plt.get_cmap('gnuplot')
+  gy = plt.get_cmap('Greys')
+  plt.gcf().suptitle("Longitudinal Phase Space Slice from "
+    "$y={0:.2f}\ \lambda_p$ --  ${1:.2f}\ \lambda_p$ "
+    "$({2:.3f}\mathrm{{\mu m}}$ --  ${3:.3f}\mathrm{{\mu m}})$ "
+    "$\lambda_p = {4:.2f}\mathrm{{\mu m}}$"
+    "".format(min(plotRange),max(plotRange),siXmin,siXmax,lmda*1e6))
+  plt.gcf().set_size_inches(24,13.5)
+
+# plot full phase space
+  ax[0][1].append(ax[0][0].scatter(phasePlot.xvar, phasePlot.yvar,
+    c=phasePlot.cvar, s=1, facecolor='0', cmap=gc, lw=0,hatch='',
+    norm=LogNorm(vmin=phasePlot.cmin,vmax=phasePlot.cmax)))
+  divider = make_axes_locatable(ax[0][0])
+  cax = divider.append_axes('right', size='5%', pad=0.05)
+  ax[0][1].append(plt.colorbar(ax[0][1][0], cax=cax))
+  ax[0][1][-1].set_label("phase space density $(m^{-1}(m_ec)^{-1})$")
+  ax[0][0].set_xlim(phasePlot.xmin,phasePlot.xmax)
+  ax[0][0].set_xlabel("$x\ (\lambda_p)$")
+  ax[0][0].set_ylabel("${0}\ (m_e c)$".format(component_expr))
+
+# plot zoomed phase space
+  ax[1][1].append(ax[1][0].scatter(phaseZoomPlot.xvar, phaseZoomPlot.yvar,
+    c=phaseZoomPlot.cvar, s=1, facecolor='0', cmap=gc, lw=0,hatch='',
+    norm=LogNorm(vmin=phaseZoomPlot.cmin,vmax=phaseZoomPlot.cmax)))
+  divider = make_axes_locatable(ax[1][0])
+  cax = divider.append_axes('right', size='5%', pad=0.05)
+  ax[1][1].append(plt.colorbar(ax[0][1][0], cax=cax))
+  ax[1][1][-1].set_label("phase space density $(m^{-1}(m_ec)^{-1})$")
+  ax[1][0].set_xlim(phaseZoomPlot.xmin,phaseZoomPlot.xmax)
+  ax[1][0].set_ylim(phaseZoomPlot.ymin,phaseZoomPlot.ymax)
+  ax[1][0].set_xlabel("$x\ (\lambda_p)$")
+  ax[1][0].set_ylabel("${0}\ (m_e c)$".format(component_expr))
+
+# plot density
+  ax[2][1].append(ax[2][0].imshow(densityPlot.cvar,aspect='auto',interpolation='none',
+    extent=densityPlot.list_lims(),cmap=gc, vmin=densityPlot.cmin,
+    vmax=densityPlot.cmax, norm=LogNorm()))
+  ax[2][1].append(ax[2][0].axhspan(densityPlot.ymin,min(plotRange),color='white',alpha=0.5))
+  ax[2][1].append(ax[2][0].axhspan(max(plotRange),densityPlot.ymax,color='white',alpha=0.5))
+  ax[2][0].set_xlim(densityPlot.xmin,densityPlot.xmax)
+  ax[2][0].set_ylim(densityPlot.ymin,densityPlot.ymax)
+  divider = make_axes_locatable(ax[2][0])
+  cax = divider.append_axes('right', size='5%', pad=0.05)
+  plt.colorbar(ax[2][1][0], cax=cax)
+  ax[2][0].set_xlabel("$x\ (\lambda_p)$")
+  ax[2][0].set_ylabel("$y\ (\lambda_p)$")
+
+# plot density
+  ax[3][1].append(ax[3][0].semilogy(densLineout.xvar, densLineout.yvar, 'r'))
+  divider = make_axes_locatable(ax[3][0])
+  cax = divider.append_axes('right', size='5%', pad=0.05)
+  cax.set_frame_on(False)
+  cax.set_axis_off()
+  rline = mlines.Line2D([],[],color='red', label=r'$n_e$')
+  ax[3][0].legend(handles=[rline])
+  ax[3][0].set_xlim(densLineout.xmin,densLineout.xmax)
+  ax[3][0].set_ylim(densLineout.ymin,densLineout.ymax)
+  ax[3][0].set_xlabel("$x\ (\lambda_p)$")
+  ax[3][0].set_ylabel("$n_e\ (\mathrm{m^{-3}})$")
+
+# plot Ex
+  ax[4][1].append(ax[4][0].plot(eXLineout.xvar, eXLineout.yvar, 'r'))
+  divider = make_axes_locatable(ax[4][0])
+  cax = divider.append_axes('right', size='5%', pad=0.05)
+  cax.set_frame_on(False)
+  cax.set_axis_off()
+  ax[4][0].set_xlim(eXLineout.xmin,eXLineout.xmax)
+  ax[4][0].set_ylim(eXLineout.ymin,eXLineout.ymax)
+  ax[4][0].set_xlabel("$x\ (\lambda_p)$")
+  ax[4][0].set_ylabel("$E_x\ (\mathrm{Vm^{-1}})$")
+
+# plot Ey
+  ax.append([ax[4][0].twinx(),[]])
+  ax[8][1].append(ax[8][0].plot(eYLineout.xvar, eYLineout.yvar, 'b'))
+  divider = make_axes_locatable(ax[8][0])
+  cax = divider.append_axes('right', size='5%', pad=0.05)
+  cax.set_frame_on(False)
+  cax.set_axis_off()
+  rline = mlines.Line2D([],[],color='red', label=r'$E_x$')
+  bline = mlines.Line2D([],[],color='blue', label=r'$E_y$')
+  ax[8][0].legend(handles=[rline,bline])
+  ax[8][0].set_xlim(eYLineout.xmin,eYLineout.xmax)
+  ax[8][0].set_ylim(eYLineout.ymin,eYLineout.ymax)
+  ax[8][0].set_ylabel("$E_y\ (\mathrm{Vm^{-1}})$")
+
+# plot Bz
+  ax[5][1].append(ax[5][0].plot(bZLineout.xvar, bZLineout.yvar, 'g'))
+  divider = make_axes_locatable(ax[5][0])
+  cax = divider.append_axes('right', size='5%', pad=0.05)
+  cax.set_frame_on(False)
+  cax.set_axis_off()
+  rline = mlines.Line2D([],[],color='green', label=r'$B_z$')
+  ax[5][0].legend(handles=[rline])
+  ax[5][0].set_xlim(bZLineout.xmin,bZLineout.xmax)
+  ax[5][0].set_ylim(bZLineout.ymin,bZLineout.ymax)
+  ax[5][0].set_xlabel("$x\ (\lambda_p)$")
+  ax[5][0].set_ylabel("$B_z\ (\mathrm{T})$")
+
+# plot Ex FFT
+  ax[6][1].append(ax[6][0].semilogy(eXFFTPlot.xvar, eXFFTPlot.yvar, 'r'))
+  divider = make_axes_locatable(ax[6][0])
+  cax = divider.append_axes('right', size='5%', pad=0.05)
+  cax.set_frame_on(False)
+  cax.set_axis_off()
+  ax[6][0].legend(handles=[rline])
+  ax[6][0].set_xlim(eXFFTPlot.xmin,eXFFTPlot.xmax)
+  ax[6][0].set_ylim(eXFFTPlot.ymin,eXFFTPlot.ymax)
+  ax[6][0].set_xlabel("$x^{-1}\ (\mathrm{m^{-1}})$")
+  ax[6][0].set_ylabel("$f(E_x)\ (\mathrm{arb.})$")
+
+# plot Ey FFT
+  ax.append([ax[6][0].twinx(),[]])
+  ax[9][1].append(ax[9][0].semilogy(eYFFTPlot.xvar, eYFFTPlot.yvar, 'b'))
+  divider = make_axes_locatable(ax[9][0])
+  cax = divider.append_axes('right', size='5%', pad=0.05)
+  cax.set_frame_on(False)
+  cax.set_axis_off()
+  rline = mlines.Line2D([],[],color='red', label=r'$FFT(E_x)$')
+  bline = mlines.Line2D([],[],color='blue', label=r'$FFT(E_y)$')
+  ax[9][0].legend(handles=[rline,bline])
+  ax[9][0].set_xlim(eYFFTPlot.xmin,eYFFTPlot.xmax)
+  ax[9][0].set_ylim(eYFFTPlot.ymin,eYFFTPlot.ymax)
+  ax[9][0].set_ylabel("$f(E_y)\ (\mathrm{arb.})$")
+
+# plot Bz FFT
+  ax[7][1].append(ax[7][0].semilogy(bZFFTPlot.xvar, bZFFTPlot.yvar, 'g'))
+  divider = make_axes_locatable(ax[7][0])
+  cax = divider.append_axes('right', size='5%', pad=0.05)
+  cax.set_frame_on(False)
+  cax.set_axis_off()
+  ax[7][0].legend(handles=[rline])
+  ax[7][0].set_xlim(bZFFTPlot.xmin,bZFFTPlot.xmax)
+  ax[7][0].set_ylim(bZFFTPlot.ymin,bZFFTPlot.ymax)
+  ax[7][0].set_xlabel("$x^{-1}\ (\mathrm{m^{-1}})$")
+  ax[7][0].set_ylabel("$f(B_z)\ (\mathrm{arb.})$")
+
+# plot density FFT
+  ax.append([ax[7][0].twinx(),[]])
+  ax[10][1].append(ax[10][0].semilogy(densFFTPlot.xvar, densFFTPlot.yvar, 'r'))
+  divider = make_axes_locatable(ax[10][0])
+  cax = divider.append_axes('right', size='5%', pad=0.05)
+  cax.set_frame_on(False)
+  cax.set_axis_off()
+  rline = mlines.Line2D([],[],color='green', label=r'$FFT(B_z)$')
+  bline = mlines.Line2D([],[],color='red', label=r'$FFT(n_e)$')
+  ax[10][0].legend(handles=[rline,bline])
+  ax[10][0].set_xlim(densFFTPlot.xmin,densFFTPlot.xmax)
+  ax[10][0].set_ylim(densFFTPlot.ymin,densFFTPlot.ymax)
+  ax[10][0].set_ylabel("$f(E_y)\ (\mathrm{arb.})$")
+
+# save plot and close
+  plt.savefig(filename,format='png')#,dpi=300)
+  plt.close()
+
+  np.savetxt("{0}_field.csv".format(filename),
+    [scaledGridX,sliceDens,sliceEX,sliceEY,sliceBZ],
+    delimiter=',',header="X n_e Ex Ey Bz")
+  np.savetxt("{0}_field.csv".format(filename),
+    [fftFreq,densFFT,exFFT,eyFFT,bzFFT],
+    delimiter=',',header="X n_e Ex Ey Bz")
+
+   
+if __name__ == '__main__':
+  main()

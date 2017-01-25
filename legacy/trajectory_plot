@@ -1,0 +1,41 @@
+#!/usr/bin/env python
+# vim: set fileencoding=UTF-8
+
+import pickle
+import argparse
+import re
+import os
+
+import sdf
+import numpy as np
+
+
+def argument_parse():
+
+# Set up parser and global options
+  parser = argparse.ArgumentParser(description='Find density FFT')
+  parser.add_argument('prefix',type=str,
+    metavar="prefix", help=".pickle file prefix")
+
+  return(parser.parse_args())
+
+
+def main():
+
+  args = argument_parse()
+
+  pickleList = [f for f in os.listdir(os.getcwd()) if
+    re.match('{0}[0-9]*.pickle'.format(args.prefix), f)]
+
+  pid = 
+
+  for pickleFile in pickleList:
+    with open(pickleFile, 'rb') as fh:
+      pickleData = pickle.load(fh)
+
+    
+
+
+
+if __name__ == "__main__":
+  main()

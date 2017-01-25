@@ -1,0 +1,129 @@
+#!/usr/bin/env python
+# vim: set fileencoding=UTF-8
+
+import multiprocessing as mp
+import os
+import sys
+import shutil
+from distutils import spawn
+import argparse
+import epochtools_common as ec
+import functools
+
+import matplotlib
+matplotlib.use('Agg')  
+from matplotlib.colors import LogNorm
+from mpl_toolkits.axes_grid1 import make_axes_locatable
+import matplotlib.pyplot as plt
+import numpy as np
+import sdf
+
+def argument_parse():
+  parser = argparse.ArgumentParser(description='Find density FFT')
+  parser.add_argument('pids', type=int, nargs='+',
+    metavar=("NNNN"), help='limits of colour axis')
+  return(parser.parse_args())
+
+def mkimage(filename, particle_tracks):
+
+  particle_positions = extract_tracks(filename, particle_tracks.keys())
+
+  filedata = sdf.SDF(filename).read()
+  x = filedata['Grid/Grid/X']
+  y = filedata['Grid/Grid/Y']
+  dens = filedata['Derived/Number_Density'].transpose()
+
+  partx = filedata['Grid/Particles/electron/X'][::1]
+  partpx = filedata['Particles/Px/electron'][::1]
+
+  cmin = dens.min()
+  cmax = dens.max()
+
+  plt.figure()
+  ax = []
+  ax.append(plt.subplot2grid((2,3), (0,0), colspan=3))
+  ax.append(plt.subplot2grid((2,3), (1,0), colspan=2))
+  ax.append(plt.subplot2grid((2,3), (1,2), colspan=1))
+	
+	
+  im0 = []
+  im1 = []
+  im2 = []
+ 
+  for a in particle_tracks.keys():
+    im0.append(ax[0].plot(particle_tracks[a][1],particle_tracks[a][3]))
+  for a in particle_positions.keys():
+    im0.append(ax[0].plot(particle_positions[a][1],particle_positions[a][3],'k.'))
+  
+  im1.append(ax[1].imshow(dens, vmin=cmin, vmax=cmax, extent=[x.min(), x.max(), y.min(), y.max()], aspect='auto'))
+  for a in particle_positions.keys():
+    im1.append(ax[1].plot(particle_positions[a][1],particle_positions[a][2],'k.'))
+  ax[1].set_xlim(x.min(),x.max())
+  ax[1].set_ylim(y.min(),y.max())
+
+  im2.append(ax[2].plot(partx, partpx, ','))
+
+  divider = make_axes_locatable(ax[0])
+  cax = divider.append_axes('right', size='5%', pad=0.05)
+  plt.colorbar(im1[0], cax=cax)
+  x_px = 1920
+  y_px = 1080
+  y_size=10
+  x_size=y_size*x_px / y_px
+  plt.gcf().set_size_inches(x_size,y_size)
+  savepath = os.path.join('movie',(filename[:-4]))
+  print("Creating {0}.png".format(savepath))
+  plt.savefig(savepath,dpi=x_px/x_size)
+  plt.close()
+
+
+def extract_tracks(filename, pids):
+  tracks = {}
+  sdf_data = ec.read_sdf(filename)
+
+  for pid in pids:
+    try:
+      idx = np.where(sdf_data['Particles/ID/electron'] == pid)[0][0]
+    except IndexError:
+      idx = None
+    if idx:
+      tracks[pid] = np.asarray((sdf_data['Header']['step'],
+                    sdf_data['Grid/Particles/electron/X'][idx],
+                    sdf_data['Grid/Particles/electron/Y'][idx],
+                    sdf_data['Particles/Px/electron'][idx],
+                    sdf_data['Particles/Py/electron'][idx]))
+  
+  return tracks
+
+    
+
+def main():
+
+  global args
+  args = argument_parse()
+  moviedir = ec.force_mkdir('movie')
+  sdf_list = [f for f in os.listdir(os.getcwd()) if f.endswith('.sdf')]
+
+  ptex = functools.partial(extract_tracks, pids=args.pids)
+  worker_pool = mp.Pool(processes=mp.cpu_count())
+  particle_tracks = ec.ld_to_dl(worker_pool.map(ptex, sdf_list))
+  worker_pool.close()
+  worker_pool.join()
+  
+  for a in particle_tracks.keys():
+    particle_tracks[a] = np.vstack(map(np.asarray, zip(*particle_tracks[a])))
+    particle_tracks[a] = particle_tracks[a][:,particle_tracks[a][0].argsort()]
+  print("Found {0} tracks.".format(len(particle_tracks))) 
+
+
+  ptmk = functools.partial(mkimage, particle_tracks=particle_tracks)
+  worker_pool = mp.Pool(processes=mp.cpu_count())
+  worker_pool.map(ptmk, sdf_list)
+  #map(ptmk, sdf_list)
+  worker_pool.close()
+  worker_pool.join()
+  
+#  ec.make_movie(moviedir)
+  
+if __name__ == '__main__':
+  main()

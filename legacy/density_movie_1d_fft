@@ -1,0 +1,75 @@
+#!/usr/bin/env python
+# vim: set fileencoding=UTF-8
+
+import matplotlib
+matplotlib.use('Agg')  
+from matplotlib.colors import LogNorm
+from mpl_toolkits.axes_grid1 import make_axes_locatable
+import matplotlib.pyplot as plt
+import numpy as np
+import sdf
+import multiprocessing as mp
+import os
+import shutil
+from distutils import spawn
+
+def main():
+
+  try:
+    shutil.rmtree('movie')
+  except:
+    pass
+  try:
+    os.mkdir('movie')
+  except:
+    print('Problem creating movie directory, check perms?')
+    exit()
+  sdf_list = [f for f in os.listdir(os.getcwd()) if f.endswith('.sdf')]
+  worker_pool = mp.Pool(processes=mp.cpu_count())
+  worker_pool.map(mkimage, sdf_list)
+  if spawn.find_executable('avconv'):
+    converter = spawn.find_executable('avconv')
+  elif spawn.find_executable('ffmpeg'):
+    converter = spawn.find_executable('ffmpeg')
+  else:
+    print("Couldn't find ffmpeg/avconv :(\n"
+          "you're on your own for making the movie)")
+    os.exit(1)
+
+  conv_args = [converter,'-r', '1', '-i', 'movie/%04d.png', '-c:v', 'libx264',
+              '-r', '30', '-pix_fmt', 'yuv420p','-y', 
+              ''.join((os.path.basename(os.getcwd()),'.mp4'))]
+  spawn.spawn(conv_args)
+
+def mkimage(filename):
+
+  filedata = sdf.SDF(filename).read()
+  x = filedata['Grid/Grid/X']
+  dens = filedata['Derived/Number_Density/electron']
+  
+  fftfreq = np.fft.rfftfreq(len(x),(x[1]-x[0]))
+  fft_val = np.absolute(np.fft.rfft(dens))
+  
+
+  fig = plt.figure()
+  ax = []
+  ax.append(plt.subplot2grid((2,1), (0,0)))
+  ax.append(plt.subplot2grid((2,1), (1,0)))
+
+
+  ax[0].semilogy(x,dens)
+  #ax[0].plot(x,dens)
+  ax[1].semilogy(fft_val)
+  ax[0].set_ylim([5e23,5e26])
+  x_px = 1920
+  y_px = 1080
+  y_size=10
+  x_size=y_size*x_px / y_px
+  plt.gcf().set_size_inches(x_size,y_size)
+  savepath = os.path.join('movie',(filename[:-4]))
+  print(savepath)
+  plt.savefig(savepath,dpi=x_px/x_size)
+  plt.close()
+  
+if __name__ == '__main__':
+  main()

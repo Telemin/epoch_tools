@@ -1,0 +1,200 @@
+#!/usr/bin/env python
+# vim: set fileencoding=UTF-8
+
+import sdf
+import re
+import os
+import shutil
+import argparse
+import numpy as np
+import multiprocessing as mp
+
+from multiprocessing import Manager
+from distutils import spawn
+
+import matplotlib
+matplotlib.use('Agg')  
+from matplotlib import pylab
+import matplotlib.cm as cm
+from matplotlib.colors import LogNorm
+from mpl_toolkits.axes_grid1 import make_axes_locatable
+from mpl_toolkits.mplot3d import Axes3D
+import matplotlib.pyplot as plt
+import matplotlib.patches as pat
+
+def argument_parse():
+  parser = argparse.ArgumentParser(description='Find density FFT')
+  parser.add_argument('sdffiles', metavar='NNNN', type=int, nargs='+',
+                   help='SDF file(s) to be processed')
+  parser.add_argument('xRange', type=float, nargs=2,
+                   help='charge summing ellipse length')
+  parser.add_argument('yRange', type=float, nargs=2,
+                   help='charge summing ellipse width')
+  parser.add_argument('--lim', dest='limits', type=float, nargs=4,
+    metavar=("xmin", "xmax", "ymin", "ymax"), help='limits of window')
+  parser.add_argument('--logscale', action='store_true',
+    help="Use log scale for output")
+  parser.add_argument('--clim', dest='clim', type=float, nargs=2,
+    metavar=("cmin", "cmax"), help="colour axis limits")
+  parser.add_argument('--verbose','-v',action='store_true',
+    help="give verbose (debugging) output")
+  parser.add_argument('--prefix','-p',default='',
+    help="file prefix")
+  return(parser.parse_args())
+
+def debug(*debuginfo):
+  if args.verbose:
+    print(''.join(map(str,debuginfo)))
+
+def process_file(filename):
+  try:
+    sdf_data = sdf.SDF(filename).read()
+  except:
+    print("Failed to open file {0}".format(filename))
+    exit()
+  return sdf_data
+
+def fft_process(filename):
+  sdf_data = process_file(filename)
+  
+  x = sdf_data['Grid/Grid/X']
+  xg = sdf_data['Grid/Grid_node/X']
+  y = sdf_data['Grid/Grid/Y']
+  yg = sdf_data['Grid/Grid_node/Y']
+  dens = sdf_data['Derived/Number_Density/electron']
+  
+  plotx = x
+  ploty = y
+  plotdens = dens
+
+  debug("Initial x.shape: {}".format(x.shape))
+  debug("Initial y.shape: {}".format(y.shape))
+  debug("Initial dens.shape: {}".format(dens.shape))
+
+  if args.limits:
+    xmin = (np.abs(x-args.limits[0])).argmin()
+    xmax = (np.abs(x-args.limits[1])).argmin()
+    ymin = (np.abs(y-args.limits[2])).argmin()
+    ymax = (np.abs(y-args.limits[3])).argmin()
+    debug("x limits, {}: {} -- {}: {}".format(xmin,x[xmin],xmax,x[xmax]))
+    debug("y limits, {}: {} -- {}: {}".format(ymin,y[ymin],ymax,y[ymax]))
+    plotx = x[xmin:xmax+1]
+    plotxg = xg[xmin:xmax+2]
+    ploty = y[ymin:ymax+1]
+    plotyg = yg[ymin:ymax+2]
+    plotdens = dens[xmin:xmax+1,ymin:ymax+1]
+
+  debug("New x.shape: {}".format(plotx.shape))
+  debug("New y.shape: {}".format(ploty.shape))
+  debug("New dens.shape: {}".format(plotdens.shape))
+
+  elXMin = min(args.xRange)
+  elXMax = max(args.xRange)
+  elYMin = min(args.yRange)
+  elYMax = max(args.yRange)
+
+  xa = (elXMax - elXMin)/2
+  xo = (elXMax + elXMin)/2
+  ya = (elYMax - elYMin)/2
+  yo = (elYMax + elYMin)/2
+
+  print(xa,xo,ya,yo)
+  print(plotx.min(),plotx.max())
+  print(ploty.min(),ploty.max())
+  print(dens.shape)
+  print(plotx.shape,ploty.shape)
+
+  xloc = np.intersect1d(np.where(plotx > elXMin), np.where(plotx < elXMax))
+  yloc = np.intersect1d(np.where(ploty > elYMin), np.where(ploty < elYMax))
+ 
+  cumdens = 0
+
+  dispdens = plotdens.copy()
+
+  for xl in xloc:
+    for yl in yloc:
+      x = plotx[xl] - xo
+      y = ploty[yl] - yo
+      ell = (x**2 / xa**2) + (y**2 / ya**2)
+      print(ell)
+      if ell <= 1:
+        x1 = plotx[xl + 1] - xo
+        y2 = ploty[yl + 1] - yo
+        celldens = np.abs(np.pi*(x1**2 - x**2)*(x1 - x)*plotdens[xl,yl])
+        cumdens += celldens
+      else:
+        dispdens[xl,yl] = 0
+
+  dispdens = dispdens[xloc]
+  dispdens = dispdens[:,yloc]
+
+  charge = cumdens * 1.602e-19
+  charge /= 1e-12
+
+  plotx = plotx / 1e-3
+  ploty = ploty / 1e-3
+  xo /= 1e-3
+  xa /= 1e-3
+  yo /= 1e-3
+  ya /= 1e-3
+
+  print(cumdens,charge)
+
+
+  if args.logscale:
+    normalise = LogNorm()
+  else:
+    normalise = None
+  
+  cmin = args.clim[0] if args.clim else (plotdens.min() if plotdens.min() > 2 else 2)
+  cmax = args.clim[1] if args.clim else plotdens.max()
+
+  fig = plt.figure()
+  ax = []
+  ax.append(plt.subplot(211))
+  ax.append(plt.subplot(212))
+  im = []
+  im.append(ax[0].imshow(np.rot90(plotdens),aspect='auto',cmap=plt.get_cmap('CMRmap'),
+    vmin=cmin, vmax=cmax, norm=normalise,
+    extent=[plotx.min(), plotx.max(), ploty.min(), ploty.max()]))
+  im.append(ax[1].imshow(np.rot90(dispdens),aspect='auto',cmap=plt.get_cmap('CMRmap'),
+    vmin=cmin, vmax=cmax, norm=normalise,
+    extent=[plotx.min(), plotx.max(), ploty.min(), ploty.max()]))
+  ax[0].add_artist(pat.Ellipse(xy=(xo,yo),width=2*xa,height=2*ya,ec='w',fc='none'))
+  ax[0].set_xlabel("$x \mathrm{{(mm)}}$")
+  ax[0].set_ylabel("$y \mathrm{{(mm)}}$")
+  ax[1].set_xlabel("$x \mathrm{{(mm)}}$")
+  ax[1].set_ylabel("$y \mathrm{{(mm)}}$")
+  divider = []
+  divider.append(make_axes_locatable(ax[0]))
+  divider.append(make_axes_locatable(ax[1]))
+  cax = []
+  cax.append(divider[0].append_axes('right', size='5%', pad=0.05))
+  cax.append(divider[1].append_axes('right', size='5%', pad=0.05))
+  plt.colorbar(im[0], cax=cax[0])
+  plt.colorbar(im[1], cax=cax[1])
+
+  x_px = 1920
+  y_px = 1080
+  y_size=8
+  x_size=y_size*x_px / y_px
+  plt.gcf().set_size_inches(x_size,y_size)
+  fig.suptitle("Estimated bunch charge $\sim {0:.2f}\mathrm{{pC}}$".format(charge))
+  savepath = ("{0}{1}_est_charge".format(args.prefix,filename[:-4]))
+  debug(savepath)
+  plt.savefig(savepath,dpi=x_px/x_size)
+  plt.close()
+
+
+def main():
+  global args
+  args = argument_parse()
+  
+  for filenum in args.sdffiles:
+    filename = "{0:04d}.sdf".format(filenum)
+    fft_process(filename)
+    
+   
+if __name__ == "__main__":
+  main()
+

@@ -1,4 +1,5 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python
+# vim: set fileencoding=UTF-8
 
 import sdf
 import re
@@ -41,13 +42,11 @@ def fft_process(filename):
   
   x = sdf_data['Grid/Grid/X']
   y = sdf_data['Grid/Grid/Y']
-  dens = sdf_data['Derived/Number_Density/electron']
-  ex = sdf_data['Electric Field/Ex']
+  dens = sdf_data['Electric Field/Ex']
   
   plotx = x
   ploty = y
   plotdens = dens
-  plotex = ex
 
   print("Initial x.shape: {}".format(x.shape))
   print("Initial y.shape: {}".format(y.shape))
@@ -63,11 +62,22 @@ def fft_process(filename):
     plotx = x[xmin:xmax+1]
     ploty = y[ymin:ymax+1]
     plotdens = dens[xmin:xmax+1,ymin:ymax+1]
-    plotex = ex[xmin:xmax+1,ymin:ymax+1]
 
   print("New x.shape: {}".format(plotx.shape))
   print("New y.shape: {}".format(ploty.shape))
   print("New dens.shape: {}".format(plotdens.shape))
+
+  densfft = np.absolute(np.fft.fftshift(np.fft.fft2(plotdens)))
+  freqx = np.fft.fftshift(np.fft.fftfreq(len(plotx),np.abs(plotx[3]-plotx[2])))
+  freqy = np.fft.fftshift(np.fft.fftfreq(len(ploty),np.abs(ploty[3]-ploty[2])))
+
+#  da1 = densfft.shape[0]/2
+#  da10 = da1 / 4
+#  db1 = densfft.shape[1]/2
+#  db10 = db1 / 4
+#  densfft = densfft[da1-da10:da1+da10,db1-db10:db1+db10]
+#  freqx = freqx[da1-da10:da1+da10]
+#  freqy = freqy[db1-db10:db1+db10]
   
   fig = plt.figure()
   ax = []
@@ -76,11 +86,11 @@ def fft_process(filename):
   ax.append(plt.subplot2grid((2,2),(1,0),colspan=2))
   im = []
   im.append(ax[0].imshow(np.rot90(plotdens), aspect='auto',
-    vmin=1e24, vmax=1e27, norm=LogNorm(),
+    vmin=-1e12, vmax=1e12,
     extent=[plotx.min(), plotx.max(), ploty.min(), ploty.max()]))
-  im.append(ax[1].imshow(np.rot90(plotex), aspect='auto',
-    vmin=-1e12, vmax=02,
-    extent=[plotx.min(),plotx.max(),ploty.min(),ploty.max()]))
+  im.append(ax[1].imshow(np.rot90(densfft), aspect='auto',
+    vmin=densfft.min(), vmax=densfft.max(), norm=LogNorm(),
+    extent=[freqx.min(),freqx.max(),freqy.min(),freqy.max()]))
   divider = []
   divider.append(make_axes_locatable(ax[0]))
   divider.append(make_axes_locatable(ax[1]))
@@ -98,7 +108,7 @@ def fft_process(filename):
   y_size=8
   x_size=y_size*x_px / y_px
   plt.gcf().set_size_inches(x_size,y_size)
-  savepath = ("{0}_dens_ex".format(filename[:-4]))
+  savepath = ("{0}_fft".format(filename[:-4]))
   print(savepath)
   plt.savefig(savepath,dpi=x_px/x_size)
   plt.close()

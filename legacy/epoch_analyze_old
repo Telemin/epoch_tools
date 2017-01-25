@@ -1,0 +1,990 @@
+#!/usr/bin/env python2
+# vim: set fileencoding=UTF-8
+
+import re
+import multiprocessing as mp
+import os
+import sys
+import shutil
+from distutils import spawn
+import argparse
+import functools
+
+import epochtools_common as ec
+
+import matplotlib
+matplotlib.use('Agg')  
+from matplotlib.colors import LogNorm, SymLogNorm
+from mpl_toolkits.axes_grid1 import make_axes_locatable
+import matplotlib.pyplot as plt
+import numpy as np
+import sdf
+
+def argument_parse():
+
+# Set up parser and global options
+  parser = argparse.ArgumentParser(description='Find density FFT')
+  parser.add_argument('--exclude','-e',dest='exclude',action='append',
+    metavar="patt", help="exclude filenames matching regex 'patt', " 
+    "may be used more than once")
+  parser.add_argument('--freshen','-f', dest='freshen', action='store_true',
+    help="Re-analyze all files")
+  parser.add_argument('--ires', '-i', dest='ires', type=int, nargs=2,
+    metavar=(r'x(px)', r'y(px)'), help='Output image dimensions (px)')
+  parser.add_argument('--numprocs','-n', dest='procs', type=int, default=1,
+    help="Number of analysis threads to use")
+  parser.add_argument('--window-clip','-c',dest='clip', type=float, nargs=4,
+    metavar=("xmin","xmax","ymin","ymax"), help="Clip total window size, (expressed as"
+    "fractional position, from bottom right)")
+  parser.add_argument('--verbose','-v', action='store_true',
+    help="give verbose (debugging) output")
+  parser.add_argument('--single', '-s', dest='single', type=str,
+    metavar="filename", help="analyse single file")
+  parser.add_argument('--movie','-m', dest='movie', action='store_true',
+    help="create movie using all available files, (default)")
+  parser.add_argument('--outputprefix','-p',dest='outputPrefix',type=str,
+    metavar="prefix", help="prefix to apply to output file(s)")
+  parser.add_argument('--3dslice','-3',dest='3dSlice',type=float, default=0.0,
+    metavar="z", help="z coordinate of plane to slice out. Valid for 3D only.")
+  parser.add_argument('--outputdir','-d',dest='outputDir',type=str,
+    metavar="dir", help="directory to hold output files, defaults to {mode}")
+
+# Define subparser handler
+  subparsers = parser.add_subparsers(help="Modes",dest='mode')
+
+#Density mode
+  density = subparsers.add_parser('density',help="Analyze electron density")
+  density.set_defaults(imgfunc=density_image)
+  density.add_argument('--species',default='electron',
+    help="Species for density plot")
+  density.add_argument('--logscale',action='store_true', 
+    help="log scale output")  
+  density.add_argument('--clim', dest='limits', type=float, nargs=2,
+    metavar=("cmin", "cmax"), help='limits of colour axis')
+
+#ex mode
+  ex = subparsers.add_parser('ex',help="Analyze ex")
+  ex.set_defaults(imgfunc=ex_image)
+  ex.add_argument('--clim', dest='limits', type=float, nargs=2,
+   metavar=("cmin", "cmax"), help='limits of colour axis')
+  ex.add_argument('--slogscale', dest='slogscale', type=float, nargs=1,
+   metavar="linthresh", help='symmetric log scale, specify linear'
+   'range limits')
+
+#ey mode
+  ey = subparsers.add_parser('ey',help="Analyze ey")
+  ey.set_defaults(imgfunc=ey_image)
+  ey.add_argument('--clim', dest='limits', type=float, nargs=2,
+   metavar=("cmin", "cmax"), help='limits of colour axis')
+  ey.add_argument('--slogscale', dest='slogscale', type=float, nargs=1,
+   metavar="linthresh", help='symmetric log scale, specify linear'
+   'range limits')
+
+#ez mode
+  ez = subparsers.add_parser('ez',help="Analyze ez")
+  ez.set_defaults(imgfunc=ez_image)
+  ez.add_argument('--clim', dest='limits', type=float, nargs=2,
+   metavar=("cmin", "cmax"), help='limits of colour axis')
+  ez.add_argument('--slogscale', dest='slogscale', type=float, nargs=1,
+   metavar="linthresh", help='symmetric log scale, specify linear'
+   'range limits')
+
+#bx mode
+  bx = subparsers.add_parser('bx',help="Analyze bx")
+  bx.set_defaults(imgfunc=bx_image)
+  bx.add_argument('--clim', dest='limits', type=float, nargs=2,
+   metavar=("cmin", "cmax"), help='limits of colour axis')
+  bx.add_argument('--slogscale', dest='slogscale', type=float, nargs=1,
+   metavar="linthresh", help='symmetric log scale, specify linear'
+   'range limits')
+
+#by mode
+  by = subparsers.add_parser('by',help="Analyze by")
+  by.set_defaults(imgfunc=by_image)
+  by.add_argument('--clim', dest='limits', type=float, nargs=2,
+   metavar=("cmin", "cmax"), help='limits of colour axis')
+  by.add_argument('--slogscale', dest='slogscale', type=float, nargs=1,
+   metavar="linthresh", help='symmetric log scale, specify linear'
+   'range limits')
+
+#bz mode
+  bz = subparsers.add_parser('bz',help="Analyze bz")
+  bz.set_defaults(imgfunc=bz_image)
+  bz.add_argument('--clim', dest='limits', type=float, nargs=2,
+   metavar=("cmin", "cmax"), help='limits of colour axis')
+  bz.add_argument('--slogscale', dest='slogscale', type=float, nargs=1,
+   metavar="linthresh", help='symmetric log scale, specify linear'
+   'range limits')
+
+#x-Px phase space mode
+  xpx = subparsers.add_parser('x_px_phase', help="x - px phase space")
+  xpx.set_defaults(imgfunc=x_px_phase_image)
+  xpx.add_argument('--species',default='electron',
+    help="Species for phase space")
+  xpx.add_argument('--plim',type=float,nargs=2,
+    help="plot limits for momentum")
+  xpx.add_argument('--xrange', '-x', dest='xrange', type=float, nargs=2,
+    metavar=("xmin","xmax"), help="restrict x to range from xmin to xmax")
+  xpx.add_argument('--yrange', '-y', dest='yrange', type=float, nargs=2,
+   metavar=("ymin","ymax"), help="restrict y to range from ymin to ymax")
+
+#x-Px phase space mode
+  xpy = subparsers.add_parser('x_py_phase', help="x - py phase space")
+  xpy.set_defaults(imgfunc=x_py_phase_image)
+  xpy.add_argument('--species',default='electron',
+    help="Species for phase space")
+  xpy.add_argument('--plim',type=float,nargs=2,
+    help="plot limits for momentum")
+  xpy.add_argument('--xrange', '-x', dest='xrange', type=float, nargs=2,
+    metavar=("xmin","xmax"), help="restrict x to range from xmin to xmax")
+  xpy.add_argument('--yrange', '-y', dest='yrange', type=float, nargs=2,
+    metavar=("ymin","ymax"), help="restrict y to range from ymin to ymax")
+
+#y-Px phase space mode
+  ypx = subparsers.add_parser('y_px_phase', help="y - px phase space")
+  ypx.set_defaults(imgfunc=y_px_phase_image)
+  ypx.add_argument('--species',default='electron',
+    help="Species for phase space")
+  ypx.add_argument('--plim',type=float,nargs=2,
+    help="plot limits for momentum")
+  ypx.add_argument('--xrange', '-x', dest='xrange', type=float, nargs=2,
+    metavar=("xmin","xmax"), help="restrict x to range from xmin to xmax")
+  ypx.add_argument('--yrange', '-y', dest='yrange', type=float, nargs=2,
+    metavar=("ymin","ymax"), help="restrict y to range from xmin to xmax")
+
+#y-Px phase space mode
+  ypy = subparsers.add_parser('y_py_phase', help="y - px phase space")
+  ypy.set_defaults(imgfunc=y_py_phase_image)
+  ypy.add_argument('--species',default='electron',
+    help="Species for phase space")
+  ypy.add_argument('--plim',type=float,nargs=2,
+    help="plot limits for momentum")
+  ypy.add_argument('--xrange', '-x', dest='xrange', type=float, nargs=2,
+    metavar=("xmin","xmax"), help="restrict x to range from xmin to xmax")
+  ypy.add_argument('--yrange', '-y', dest='yrange', type=float, nargs=2,
+    metavar=("ymin","ymax"), help="restrict y to range from xmin to xmax")
+  
+
+  return(parser.parse_args())
+
+def debug(*debuginfo):
+  if args.verbose:
+    print(''.join(map(str,debuginfo)))
+
+def clamp(val, minval, maxval):
+  return(max(min(val,maxval),minval))
+
+def window_clip(x,y,var):
+  debug("window.shape:x,y,var",x.shape,y.shape,var.shape)
+  if args.clip:
+    xRatioMin, xRatioMax, yRatioMin, yRatioMax = \
+      [clamp(j,0,1) for j in args.clip]
+  else:
+    xRatioMin, xRatioMax, yRatioMin, yRatioMax = (0.0,1.0,0.0,1.0)
+  
+  xArgMin = int(xRatioMin * x.shape[0])
+  xArgMax = int(xRatioMax * x.shape[0])
+  yArgMin = int(yRatioMin * y.shape[0])
+  yArgMax = int(yRatioMax * y.shape[0])
+
+  debug("x,y argmin,max",xArgMin,xArgMax,yArgMin,yArgMax)
+
+  return(x[xArgMin:xArgMax],y[yArgMin:yArgMax],
+    var[xArgMin:xArgMax,yArgMin:yArgMax])
+
+
+def x_px_phase_image(filename, outputPrefix='', outputDir=''):
+
+  FileInUse = ec.check_file_in_use(filename)
+  savepath = os.path.join(outputDir,(''.join((outputPrefix,filename[:-4],'.eps'))))
+  if FileInUse:
+    print("{0} in use by PID {1}, skipping".format(filename,FileInUse))
+    return
+  elif os.path.exists(os.path.join(os.getcwd(),outputDir,''.join((filename[:-4],'.png')))):
+    print("{0} already analyzed, skipping".format(filename))
+    return
+  else:
+    print("Analyzing {0}".format(filename))
+
+  try:
+    filedata = sdf.SDF(filename).read()
+    x = filedata['Grid/Particles/{0}/X'.format(args.species)][::1]
+    y = filedata['Grid/Particles/{0}/Y'.format(args.species)][::1]
+    px = filedata['Particles/Px/{0}'.format(args.species)][::1]
+  except:
+    print("Problem analyzing {0}, file corrupted or missing data".format(filename))
+    return
+
+  rangelim = None
+  if args.xrange:
+    rangelim1 = np.argwhere(x<max(args.xrange))
+    rangelim2 = np.argwhere(x>min(args.xrange))
+    rangelim = np.intersect1d(rangelim1,rangelim2)
+    print('xrange: {}'.format(rangelim))
+  if args.yrange:
+    rangelim1 = np.argwhere(y<max(args.yrange))
+    rangelim2 = np.argwhere(y>min(args.yrange))
+    rangelim3 = np.intersect1d(rangelim1,rangelim2)
+    rangelim = np.intersect1d(rangelim,rangelim3) if args.xrange else rangelim3
+    print('yrange: {}'.format(rangelim))
+
+  if len(rangelim) > 0:
+    x = x[rangelim]    
+    y = y[rangelim]    
+    px = px[rangelim]    
+
+  lmda = 800e-9
+  mev = 5.34428576e-22
+
+  x = x/lmda
+  y = y/lmda
+  px = px/mev
+
+  plt.figure()
+  ax = []
+  ax.append(plt.subplot2grid((1,1), (0,0)))
+  im = []
+  im.append(ax[0].scatter(x, px, s=0.1))
+  ax[0].set_xlim(x.min(),x.max())
+  if args.plim:
+    ax[0].set_ylim(args.plim[0],args.plim[1])
+  else:
+    ax[0].set_ylim(px.min(),px.max())
+  x_px = args.ires[0] if args.ires else 1920
+  y_px = args.ires[1] if args.ires else 1080
+  y_size=10
+  x_size=y_size*x_px / y_px
+  ax[0].set_title("$time\ t={:.3e}\mathrm{{s}}$".format(filedata['Header']['time']))
+  ax[0].set_xlabel("$x (\lambda_p)$")
+  ax[0].set_ylabel("$P_x (\mathrm{{MeV}})$")
+  plt.gcf().set_size_inches(x_size,y_size)
+  print(savepath)
+  plt.savefig(savepath)
+  plt.close()
+  return(savepath)
+  
+def x_py_phase_image(filename, outputPrefix='', outputDir=''):
+
+  FileInUse = ec.check_file_in_use(filename)
+  savepath = os.path.join(outputDir,(''.join((outputPrefix,filename[:-4]))))
+  if FileInUse:
+    print("{0} in use by PID {1}, skipping".format(filename,FileInUse))
+    return
+  elif os.path.exists(os.path.join(os.getcwd(),outputDir,''.join((filename[:-4],'.png')))):
+    print("{0} already analyzed, skipping".format(filename))
+    return
+  else:
+    print("Analyzing {0}".format(filename))
+
+  try:
+    filedata = sdf.SDF(filename).read()
+    x = filedata['Grid/Particles/{0}/X'.format(args.species)][::1]
+    y = filedata['Grid/Particles/{0}/Y'.format(args.species)][::1]
+    px = filedata['Particles/Py/{0}'.format(args.species)][::1]
+  except:
+    print("Problem analyzing {0}, file corrupted or missing data".format(filename))
+    return
+
+  rangelim = None
+  if args.xrange:
+    rangelim1 = np.argwhere(x<args.xrange[0])
+    rangelim2 = np.argwhere(x>args.xrange[1])
+    rangelim = np.intersect1d(rangelim1,rangelim2)
+  if args.yrange:
+    rangelim1 = np.argwhere(y<args.yrange[0])
+    rangelim2 = np.argwhere(y>args.yrange[1])
+    rangelim3 = np.intersect1d(rangelim1,rangelim2)
+    rangelim = np.intersect1d(rangelim,rangelim3) if rangelim else rangelim3
+
+  x = x[rangelim] if rangelim else x
+  y = y[rangelim] if rangelim else y
+  px = px[rangelim] if rangelim else px
+
+  lmda = 800e-9
+  mev = 5.34428576e-22
+
+  x = x/lmda
+  y = y/lmda
+  px = px/mev
+
+  plt.figure()
+  ax = []
+  ax.append(plt.subplot2grid((1,1), (0,0)))
+  im = []
+  im.append(ax[0].scatter(x, px, s=0.1))
+  ax[0].set_xlim(x.min(),x.max())
+  if args.plim:
+    ax[0].set_ylim(args.plim[0],args.plim[1])
+  else:
+    ax[0].set_ylim(px.min(),px.max())
+  x_px = args.ires[0] if args.ires else 1920
+  y_px = args.ires[1] if args.ires else 1080
+  y_size=10
+  x_size=y_size*x_px / y_px
+  ax[0].set_title("$time\ t={0}\mathrm{{s}}$".format(filedata['Header']['time']))
+  ax[0].set_xlabel("$x (\lambda_p)$")
+  ax[0].set_ylabel("$P_y (\mathrm{{MeV}})$")
+  plt.gcf().set_size_inches(x_size,y_size)
+  print(savepath)
+  plt.savefig(savepath,dpi=x_px/x_size)
+  plt.close()
+  return(savepath)
+
+def y_px_phase_image(filename, outputPrefix='', outputDir=''):
+
+  FileInUse = ec.check_file_in_use(filename)
+  savepath = os.path.join(outputDir,(''.join((outputPrefix,filename[:-4]))))
+  if FileInUse:
+    print("{0} in use by PID {1}, skipping".format(filename,FileInUse))
+    return
+  elif os.path.exists(os.path.join(os.getcwd(),outputDir,''.join((filename[:-4],'.png')))):
+    print("{0} already analyzed, skipping".format(filename))
+    return
+  else:
+    print("Analyzing {0}".format(filename))
+
+  try:
+    filedata = sdf.SDF(filename).read()
+    x = filedata['Grid/Particles/{0}/X'.format(args.species)][::1]
+    y = filedata['Grid/Particles/{0}/Y'.format(args.species)][::1]
+    px = filedata['Particles/Px/{0}'.format(args.species)][::1]
+  except:
+    print("Problem analyzing {0}, file corrupted or missing data".format(filename))
+    return
+
+  rangelim = None
+  if args.xrange:
+    rangelim1 = np.argwhere(x<args.xrange[0])
+    rangelim2 = np.argwhere(x>args.xrange[1])
+    rangelim = np.intersect1d(rangelim1,rangelim2)
+  if args.yrange:
+    rangelim1 = np.argwhere(y<args.yrange[0])
+    rangelim2 = np.argwhere(y>args.yrange[1])
+    rangelim3 = np.intersect1d(rangelim1,rangelim2)
+    rangelim = np.intersect1d(rangelim,rangelim3) if rangelim else rangelim3
+
+  x = x[rangelim] if rangelim else x
+  y = y[rangelim] if rangelim else y
+  px = px[rangelim] if rangelim else px
+
+  lmda = 800e-9
+  mev = 5.34428576e-22
+
+  x = x/lmda
+  y = y/lmda
+  px = px/mev
+
+  plt.figure()
+  ax = []
+  ax.append(plt.subplot2grid((1,1), (0,0)))
+  im = []
+  im.append(ax[0].scatter(y, px, s=0.1))
+  ax[0].set_xlim(y.min(),y.max())
+  if args.plim:
+    ax[0].set_ylim(args.plim[0],args.plim[1])
+  else:
+    ax[0].set_ylim(px.min(),px.max())
+  x_px = args.ires[0] if args.ires else 1920
+  y_px = args.ires[1] if args.ires else 1080
+  y_size=10
+  x_size=y_size*x_px / y_px
+  ax[0].set_title("$time\ t={0}\mathrm{{s}}$".format(filedata['Header']['time']))
+  ax[0].set_xlabel("$y (\lambda_p)$")
+  ax[0].set_ylabel("$P_x (\mathrm{{MeV}})$")
+  plt.gcf().set_size_inches(x_size,y_size)
+  print(savepath)
+  plt.savefig(savepath,dpi=x_px/x_size)
+  plt.close()
+  return(savepath)
+
+def y_py_phase_image(filename, outputPrefix='', outputDir=''):
+
+  FileInUse = ec.check_file_in_use(filename)
+  savepath = os.path.join(outputDir,(''.join((outputPrefix,filename[:-4]))))
+  if FileInUse:
+    print("{0} in use by PID {1}, skipping".format(filename,FileInUse))
+    return
+  elif os.path.exists(os.path.join(os.getcwd(),outputDir,''.join((filename[:-4],'.png')))):
+    print("{0} already analyzed, skipping".format(filename))
+    return
+  else:
+    print("Analyzing {0}".format(filename))
+
+  try:
+    filedata = sdf.SDF(filename).read()
+    x = filedata['Grid/Particles/{0}/X'.format(args.species)][::1]
+    y = filedata['Grid/Particles/{0}/Y'.format(args.species)][::1]
+    px = filedata['Particles/Py/{0}'.format(args.species)][::1]
+  except:
+    print("Problem analyzing {0}, file corrupted or missing data".format(filename))
+    return
+
+  rangelim = None
+  if args.xrange:
+    rangelim1 = np.argwhere(x<args.xrange[0])
+    rangelim2 = np.argwhere(x>args.xrange[1])
+    rangelim = np.intersect1d(rangelim1,rangelim2)
+  if args.yrange:
+    rangelim1 = np.argwhere(y<args.yrange[0])
+    rangelim2 = np.argwhere(y>args.yrange[1])
+    rangelim3 = np.intersect1d(rangelim1,rangelim2)
+    rangelim = np.intersect1d(rangelim,rangelim3) if rangelim else rangelim3
+
+  x = x[rangelim] if rangelim else x
+  y = y[rangelim] if rangelim else y
+  px = px[rangelim] if rangelim else px
+
+  lmda = 800e-9
+  mev = 5.34428576e-22
+
+  x = x/lmda
+  y = y/lmda
+  px = px/mev
+
+  plt.figure()
+  ax = []
+  ax.append(plt.subplot2grid((1,1), (0,0)))
+  im = []
+  im.append(ax[0].scatter(y, px, s=0.1))
+  ax[0].set_xlim(y.min(),y.max())
+  if args.plim:
+    ax[0].set_ylim(args.plim[0],args.plim[1])
+  else:
+    ax[0].set_ylim(px.min(),px.max())
+  x_px = args.ires[0] if args.ires else 1920
+  y_px = args.ires[1] if args.ires else 1080
+  y_size=10
+  x_size=y_size*x_px / y_px
+  ax[0].set_title("$time\ t={0}\mathrm{{s}}$".format(filedata['Header']['time']))
+  ax[0].set_xlabel("$y (\lambda_p)$")
+  ax[0].set_ylabel("$P_y (\mathrm{{MeV}})$")
+  plt.gcf().set_size_inches(x_size,y_size)
+  print(savepath)
+  plt.savefig(savepath,dpi=x_px/x_size)
+  plt.close()
+  return(savepath)
+ 
+
+def ex_image(filename, outputPrefix='', outputDir=''):
+
+  FileInUse = ec.check_file_in_use(filename)
+  savepath = os.path.join(outputDir,(''.join((outputPrefix,filename[:-4]))))
+  if FileInUse:
+    print("{0} in use by PID {1}, skipping".format(filename,FileInUse))
+    return(None)
+  elif os.path.exists(os.path.join(os.getcwd(),outputDir,''.join((filename[:-4],'.png')))):
+    print("{0} already analyzed, skipping".format(filename))
+    return(none)
+  else:
+    print("Analyzing {0}".format(filename))
+
+  try:
+    filedata = sdf.SDF(filename).read()
+    x = filedata['Grid/Grid/X']
+    y = filedata['Grid/Grid/Y']
+    ex = filedata['Electric Field/Ex']
+  except:
+    print("Problem analyzing {0}, file corrupted or missing data".format(filename))
+    return(none)
+
+  if len(ex.shape) == 3:
+    ex = ex[:,:,int(ex.shape[2]/2)]
+
+  x, y, ex = window_clip(x,y,ex)
+
+#  safeMin = dens.min() if dens.min() > 1e10 else 1e10
+  cmin = args.limits[0] if args.limits else ex.min()
+  cmax = args.limits[1] if args.limits else ex.max()
+
+  if args.slogscale:
+    normalise=SymLogNorm(args.slogscale[0])
+  else:
+    normalise=None
+
+  plt.figure()
+  ax = []
+  ax.append(plt.subplot2grid((1,1), (0,0)))
+	
+  im = []
+  im.append(ax[0].imshow(ex.transpose(), vmin=cmin, vmax=cmax, norm=normalise,
+    cmap=plt.get_cmap('CMRmap'), extent=[x.min(), x.max(), y.min(), y.max()],
+    aspect='auto'))
+
+  divider = make_axes_locatable(ax[0])
+  cax = divider.append_axes('right', size='5%', pad=0.05)
+  cbar = plt.colorbar(im[0], cax=cax)
+  x_px = args.ires[0] if args.ires else 1920
+  y_px = args.ires[1] if args.ires else 1080
+  y_size=10
+  x_size=y_size*x_px / y_px
+  ax[0].set_title("$time\ t={0}\mathrm{{s}}$".format(filedata['Header']['time']))
+  ax[0].set_xlabel("$x\  \mathrm{m}$")
+  ax[0].set_ylabel("$y\  \mathrm{m}$")
+  cbar.set_label("$E_x\  \mathrm{Vm^{-1}}$", rotation=270)
+  plt.gcf().set_size_inches(x_size,y_size)
+  savepath = os.path.join(outputDir,(''.join((outputPrefix,filename[:-4]))))
+  plt.savefig(savepath,dpi=x_px/x_size)
+  plt.close()
+
+  return(savepath)
+
+def ey_image(filename, outputPrefix='', outputDir=''):
+
+  FileInUse = ec.check_file_in_use(filename)
+  savepath = os.path.join(outputDir,(''.join((outputPrefix,filename[:-4]))))
+  if FileInUse:
+    print("{0} in use by PID {1}, skipping".format(filename,FileInUse))
+    return
+  elif os.path.exists(os.path.join(os.getcwd(),outputDir,''.join((filename[:-4],'.png')))):
+    print("{0} already analyzed, skipping".format(filename))
+    return
+  else:
+    print("Analyzing {0}".format(filename))
+
+  try:
+    filedata = sdf.SDF(filename).read()
+    x = filedata['Grid/Grid/X']
+    y = filedata['Grid/Grid/Y']
+    ey = filedata['Electric Field/Ey']
+  except:
+    print("Problem analyzing {0}, file corrupted or missing data".format(filename))
+    return
+  
+  if len(ey.shape) == 3:
+    ey = ey[:,:,int(ey.shape[2]/2)]
+
+  x, y, ey = window_clip(x,y,ey)
+
+  cmin = args.limits[0] if args.limits else ey.min()
+  cmax = args.limits[1] if args.limits else ey.max()
+  
+  if args.slogscale:
+    normalise=SymLogNorm(args.slogscale[0])
+  else:
+    normalise=None
+
+  plt.figure()
+  ax = []
+  ax.append(plt.subplot2grid((1,1), (0,0)))
+	
+  im = []
+  im.append(ax[0].imshow(ey.transpose(), vmin=cmin, vmax=cmax, norm=normalise,
+    cmap=plt.get_cmap('CMRmap'), extent=[x.min(), x.max(), y.min(), y.max()], 
+    aspect='auto'))
+
+  divider = make_axes_locatable(ax[0])
+  cax = divider.append_axes('right', size='5%', pad=0.05)
+  cbar = plt.colorbar(im[0], cax=cax)
+  x_px = args.ires[0] if args.ires else 1920
+  y_px = args.ires[1] if args.ires else 1080
+  y_size=10
+  x_size=y_size*x_px / y_px
+  ax[0].set_title("$time\ t={0}\mathrm{{s}}$".format(filedata['Header']['time']))
+  ax[0].set_xlabel("$x\  \mathrm{m}$")
+  ax[0].set_ylabel("$y\  \mathrm{m}$")
+  cbar.set_label("$E_y\  \mathrm{Vm^{-1}}$", rotation=270)
+  plt.gcf().set_size_inches(x_size,y_size)
+  plt.savefig(savepath,dpi=x_px/x_size)
+  plt.close()
+  return(savepath)
+
+def ez_image(filename, outputPrefix='', outputDir=''):
+
+  FileInUse = ec.check_file_in_use(filename)
+  savepath = os.path.join(outputDir,(''.join((outputPrefix,filename[:-4]))))
+  if FileInUse:
+    print("{0} in use by PID {1}, skipping".format(filename,FileInUse))
+    return
+  elif os.path.exists(os.path.join(os.getcwd(),outputDir,''.join((filename[:-4],'.png')))):
+    print("{0} already analyzed, skipping".format(filename))
+    return
+  else:
+    print("Analyzing {0}".format(filename))
+
+  try:
+    filedata = sdf.SDF(filename).read()
+    x = filedata['Grid/Grid/X']
+    y = filedata['Grid/Grid/Y']
+    ez = filedata['Electric Field/Ez'].transpose()
+  except:
+    print("Problem analyzing {0}, file corrupted or missing data".format(filename))
+    return
+  
+  if len(ez.shape) == 3:
+    ez = ez[:,:,int(ez.shape[2]/2)]
+
+  x, y, ez = window_clip(x,y,ez)
+
+  cmin = args.limits[0] if args.limits else ez.min()
+  cmax = args.limits[1] if args.limits else ez.max()
+  
+  if args.slogscale:
+    normalise=SymLogNorm(args.slogscale[0])
+  else:
+    normalise=None
+
+  plt.figure()
+  ax = []
+  ax.append(plt.subplot2grid((1,1), (0,0)))
+	
+  im = []
+  im.append(ax[0].imshow(ez, vmin=cmin, vmax=cmax, norm=normalise,
+    cmap=plt.get_cmap('CMRmap'), extent=[x.min(), x.max(), y.min(), y.max()], 
+    aspect='auto'))
+
+  divider = make_axes_locatable(ax[0])
+  cax = divider.append_axes('right', size='5%', pad=0.05)
+  cbar = plt.colorbar(im[0], cax=cax)
+  x_px = args.ires[0] if args.ires else 1920
+  y_px = args.ires[1] if args.ires else 1080
+  y_size=10
+  x_size=y_size*x_px / y_px
+  ax[0].set_title("$time\ t={0}\mathrm{{s}}$".format(filedata['Header']['time']))
+  ax[0].set_xlabel("$x\  \mathrm{m}$")
+  ax[0].set_ylabel("$y\  \mathrm{m}$")
+  cbar.set_label("$E_z\  \mathrm{Vm^{-1}}$", rotation=270)
+  plt.gcf().set_size_inches(x_size,y_size)
+  plt.savefig(savepath,dpi=x_px/x_size)
+  plt.close()
+  return(savepath)
+
+def bx_image(filename, outputPrefix='', outputDir=''):
+
+  FileInUse = ec.check_file_in_use(filename)
+  savepath = os.path.join(outputDir,(''.join((outputPrefix,filename[:-4]))))
+  if FileInUse:
+    print("{0} in use by PID {1}, skipping".format(filename,FileInUse))
+    return
+  elif os.path.exists(os.path.join(os.getcwd(),outputDir,''.join((filename[:-4],'.png')))):
+    print("{0} already analyzed, skipping".format(filename))
+    return
+  else:
+    print("Analyzing {0}".format(filename))
+
+  try:
+    filedata = sdf.SDF(filename).read()
+    x = filedata['Grid/Grid/X']
+    y = filedata['Grid/Grid/Y']
+    bx = filedata['Magnetic Field/Bx'].transpose()
+  except:
+    print("Problem analyzing {0}, file corrupted or missing data".format(filename))
+    return
+  
+  if len(bx.shape) == 3:
+    bx = bx[:,:,int(bx.shape[2]/2)]
+
+  x, y, bx = window_clip(x,y,bx)
+
+  cmin = args.limits[0] if args.limits else bx.min()
+  cmax = args.limits[1] if args.limits else bx.max()
+  
+  if args.slogscale:
+    normalise=SymLogNorm(args.slogscale[0])
+  else:
+    normalise=None
+
+  plt.figure()
+  ax = []
+  ax.append(plt.subplot2grid((1,1), (0,0)))
+	
+  im = []
+  im.append(ax[0].imshow(bx, vmin=cmin, vmax=cmax, norm=normalise,
+    cmap=plt.get_cmap('CMRmap'), extent=[x.min(), x.max(), y.min(), y.max()], 
+    aspect='auto'))
+
+  divider = make_axes_locatable(ax[0])
+  cax = divider.append_axes('right', size='5%', pad=0.05)
+  cbar = plt.colorbar(im[0], cax=cax)
+  x_px = args.ires[0] if args.ires else 1920
+  y_px = args.ires[1] if args.ires else 1080
+  y_size=10
+  x_size=y_size*x_px / y_px
+  ax[0].set_title("$time\ t={0}\mathrm{{s}}$".format(filedata['Header']['time']))
+  ax[0].set_xlabel("$x\  \mathrm{m}$")
+  ax[0].set_ylabel("$y\  \mathrm{m}$")
+  cbar.set_label("$B_z\  \mathrm{T}$", rotation=270)
+  plt.gcf().set_size_inches(x_size,y_size)
+  plt.savefig(savepath,dpi=x_px/x_size)
+  plt.close()
+  return(savepath)
+
+def by_image(filename, outputPrefix='', outputDir=''):
+
+  FileInUse = ec.check_file_in_use(filename)
+  savepath = os.path.join(outputDir,(''.join((outputPrefix,filename[:-4]))))
+  if FileInUse:
+    print("{0} in use by PID {1}, skipping".format(filename,FileInUse))
+    return
+  elif os.path.exists(os.path.join(os.getcwd(),outputDir,''.join((filename[:-4],'.png')))):
+    print("{0} already analyzed, skipping".format(filename))
+    return
+  else:
+    print("Analyzing {0}".format(filename))
+
+  try:
+    filedata = sdf.SDF(filename).read()
+    x = filedata['Grid/Grid/X']
+    y = filedata['Grid/Grid/Y']
+    by = filedata['Magnetic Field/By'].transpose()
+  except:
+    print("Problem analyzing {0}, file corrupted or missing data".format(filename))
+    return
+  
+  if len(by.shape) == 3:
+    by = by[:,:,int(by.shape[2]/2)]
+
+  
+  x, y, by = window_clip(x,y,by)
+
+  cmin = args.limits[0] if args.limits else by.min()
+  cmax = args.limits[1] if args.limits else by.max()
+  
+  if args.slogscale:
+    normalise=SymLogNorm(args.slogscale[0])
+  else:
+    normalise=None
+
+  plt.figure()
+  ax = []
+  ax.append(plt.subplot2grid((1,1), (0,0)))
+	
+  im = []
+  im.append(ax[0].imshow(by, vmin=cmin, vmax=cmax, norm=normalise,
+    cmap=plt.get_cmap('CMRmap'), extent=[x.min(), x.max(), y.min(), y.max()], 
+    aspect='auto'))
+
+  divider = make_axes_locatable(ax[0])
+  cax = divider.append_axes('right', size='5%', pad=0.05)
+  cbar = plt.colorbar(im[0], cax=cax)
+  x_px = args.ires[0] if args.ires else 1920
+  y_px = args.ires[1] if args.ires else 1080
+  y_size=10
+  x_size=y_size*x_px / y_px
+  ax[0].set_title("$time\ t={0}\mathrm{{s}}$".format(filedata['Header']['time']))
+  ax[0].set_xlabel("$x\  \mathrm{m}$")
+  ax[0].set_ylabel("$y\  \mathrm{m}$")
+  cbar.set_label("$B_y\  \mathrm{T}$", rotation=270)
+  plt.gcf().set_size_inches(x_size,y_size)
+  plt.savefig(savepath,dpi=x_px/x_size)
+  plt.close()
+  return(savepath)
+
+def bz_image(filename, outputPrefix='', outputDir=''):
+
+  FileInUse = ec.check_file_in_use(filename)
+  savepath = os.path.join(outputDir,(''.join((outputPrefix,filename[:-4]))))
+  if FileInUse:
+    print("{0} in use by PID {1}, skipping".format(filename,FileInUse))
+    return
+  elif os.path.exists(os.path.join(os.getcwd(),outputDir,''.join((filename[:-4],'.png')))):
+    print("{0} already analyzed, skipping".format(filename))
+    return
+  else:
+    print("Analyzing {0}".format(filename))
+
+  try:
+    filedata = sdf.SDF(filename).read()
+    x = filedata['Grid/Grid/X']
+    y = filedata['Grid/Grid/Y']
+    bz = filedata['Magnetic Field/Bz']
+  except:
+    print("Problem analyzing {0}, file corrupted or missing data".format(filename))
+    return
+  
+  if len(bz.shape) == 3:
+    bz = bz[:,:,int(bz.shape[2]/2)]
+
+  x, y, bz = window_clip(x,y,bz)
+
+  cmin = args.limits[0] if args.limits else bz.min()
+  cmax = args.limits[1] if args.limits else bz.max()
+  
+  if args.slogscale:
+    normalise=SymLogNorm(args.slogscale[0])
+  else:
+    normalise=None
+
+  plt.figure()
+  ax = []
+  ax.append(plt.subplot2grid((1,1), (0,0)))
+	
+  im = []
+  im.append(ax[0].imshow(bz.transpose(), vmin=cmin, vmax=cmax, norm=normalise,
+    cmap=plt.get_cmap('CMRmap'), extent=[x.min(), x.max(), y.min(), y.max()], 
+    aspect='auto'))
+
+  divider = make_axes_locatable(ax[0])
+  cax = divider.append_axes('right', size='5%', pad=0.05)
+  cbar = plt.colorbar(im[0], cax=cax)
+  x_px = args.ires[0] if args.ires else 1920
+  y_px = args.ires[1] if args.ires else 1080
+  y_size=10
+  x_size=y_size*x_px / y_px
+  ax[0].set_title("$time\ t={0}\mathrm{{s}}$".format(filedata['Header']['time']))
+  ax[0].set_xlabel("$x\  \mathrm{m}$")
+  ax[0].set_ylabel("$y\  \mathrm{m}$")
+  cbar.set_label("$B_z\  \mathrm{T}$", rotation=270)
+  plt.gcf().set_size_inches(x_size,y_size)
+  plt.savefig(savepath,dpi=x_px/x_size)
+  plt.close()
+  return(savepath)
+
+
+
+def density_image(filename, outputPrefix='', outputDir=''):
+
+  FileInUse = ec.check_file_in_use(filename)
+  savepath = os.path.join(outputDir,(''.join((outputPrefix,filename[:-4]))))
+  if FileInUse:
+    print("{0} in use by PID {1}, skipping".format(filename,FileInUse))
+    return(None)
+  elif os.path.exists(os.path.join(os.getcwd(),''.join((savepath,'.png')))):
+    print("{0} already analyzed, skipping".format(filename))
+    return(None)
+  else:
+    print("Analyzing {0}".format(filename))
+
+  try:
+    filedata = sdf.SDF(filename).read()
+    x = filedata['Grid/Grid/X']
+    y = filedata['Grid/Grid/Y']
+    dens = filedata['Derived/Number_Density/{0}'.format(args.species)]
+  except:
+    print("Problem analyzing {0}, file corrupted or missing data".format(filename))
+    return(None)
+
+  if len(dens.shape) == 3:
+    dens = dens[:,:,int(dens.shape[2]/2)]
+
+  x, y, dens = window_clip(x,y,dens)
+
+  safeMin = dens.min() if dens.min() > 1e10 else 1e10
+  cmin = args.limits[0] if args.limits else safeMin
+  cmax = args.limits[1] if args.limits else dens.max()
+
+  if args.logscale:
+    normalise=LogNorm()
+  else:
+    normalise=None
+  
+  plt.figure()
+  ax = []
+  ax.append(plt.subplot2grid((1,1), (0,0)))
+
+  im = []
+  im.append(ax[0].imshow(dens.transpose(), vmin=cmin, vmax=cmax,
+    norm=normalise, cmap=plt.get_cmap('CMRmap'), 
+    extent=[x.min(), x.max(), y.min(), y.max()], aspect='auto'))
+
+  divider = make_axes_locatable(ax[0])
+  cax = divider.append_axes('right', size='5%', pad=0.05)
+  cbar = plt.colorbar(im[0], cax=cax)
+  x_px = args.ires[0] if args.ires else 1920
+  y_px = args.ires[1] if args.ires else 1080
+  y_size=10
+  x_size=y_size*x_px / y_px
+  ax[0].set_title("$time\ t={0}\mathrm{{s}}$".format(filedata['Header']['time']))
+  ax[0].set_xlabel("$x\  \mathrm{m}$")
+  ax[0].set_ylabel("$y\  \mathrm{m}$")
+  cbar.set_label("$n_e\  \mathrm{m^{-3}}$", rotation=270)
+  plt.gcf().set_size_inches(x_size,y_size)
+  plt.savefig(savepath,dpi=x_px/x_size)
+  plt.close()
+
+  return(savepath)
+
+
+def movie_mode():
+
+  prefix = ''
+  if args.outputPrefix:
+    prefix = args.outputPrefix
+
+  output = args.mode
+  if args.outputDir:
+    output = args.outputDir
+
+  if args.freshen == True:
+    print("Re-analyzing all files...")
+    ec.force_mkdir(output) 
+  else:
+    print("Analyzing new files...")
+    ec.mkdir(output)
+ 
+  sdfList = [f for f in os.listdir(os.getcwd()) if f.endswith('.sdf')]
+
+  if args.exclude:
+    for pattern in args.exclude:
+      try:
+        eP = re.compile(pattern)
+      except:
+        print("Skipping invalid regex pattern {0}".format(pattern))
+        continue
+      for sdfFile in sdfList:
+        if eP.search(sdfFile):
+          sdfList.remove(sdfFile)
+  
+  processor = functools.partial(args.imgfunc,outputPrefix=prefix,
+    outputDir=output)
+  
+  #worker_pool = mp.Pool(processes=args.procs)
+  #frames = worker_pool.map(processor, sdfList)
+  frames = list(map(processor, sdfList))
+  newframes = filter(None, frames)
+  if newframes:
+    if spawn.find_executable('avconv'):
+      converter = spawn.find_executable('avconv')
+    elif spawn.find_executable('ffmpeg'):
+      converter = spawn.find_executable('ffmpeg')
+    else:
+      print("Couldn't find ffmpeg/avconv :(\n"
+            "you're on your own for making the movie")
+      sys.exit(1)
+
+    conv_args = [converter,'-r', '2', '-i',
+      '{0}/{1}%04d.png'.format(output,prefix), '-c:v', 'libx264', '-r', '25',
+      '-pix_fmt', 'yuv420p','-y', 
+      ''.join((os.path.basename(os.getcwd()),'_{0}.mp4'.format(output)))]
+    spawn.spawn(conv_args)
+  else:
+    print("No new files, skipping movie creation")
+
+
+def single_mode():
+ 
+  prefix = ''
+  if args.outputPrefix:
+    prefix = args.outputPrefix
+
+  output = args.mode
+  if args.outputDir:
+    output = args.outputDir
+  processor = functools.partial(args.imgfunc,outputPrefix=prefix,
+    outputDir=output)
+ 
+  singleFile = {True:args.single,
+    False:''.join((args.single,'.sdf'))}[args.single.endswith('.sdf')]
+
+  if not os.path.exists(os.path.join(os.getcwd(),singleFile)):
+    print("File {0} does not exist!".format(singleFile))
+
+  if not os.path.exists(os.path.join(os.getcwd(),output,
+    ''.join((prefix,singleFile)))) or args.freshen:
+    image = processor(singleFile)
+  else:
+    print("{0} exists, use -f to force overwrite".format(''.join((prefix,
+      singleFile))))
+    
+
+def main():
+
+  global args
+  args = argument_parse()
+
+  if args.single:
+    single_mode()
+  else:
+    movie_mode()
+
+if __name__ == '__main__':
+  main()

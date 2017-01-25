@@ -1,0 +1,155 @@
+#!/usr/bin/env python
+# vim: set fileencoding=UTF-8
+
+import sdf
+import re
+import os
+import shutil
+import argparse
+import numpy as np
+import multiprocessing as mp
+
+from multiprocessing import Manager
+from distutils import spawn
+
+import matplotlib
+matplotlib.use('Agg')  
+from matplotlib import pylab
+import matplotlib.cm as cm
+from matplotlib.colors import LogNorm
+from mpl_toolkits.axes_grid1 import make_axes_locatable
+from mpl_toolkits.mplot3d import Axes3D
+import matplotlib.pyplot as plt
+
+def argument_parse():
+    parser = argparse.ArgumentParser(description='Find density FFT')
+    parser.add_argument('sdffiles', metavar='NNNN', type=int, nargs='+',
+                                     help='SDF file(s) to be processed')
+    parser.add_argument('--lim', dest='limits', type=float, nargs=4,
+        metavar=("xmin", "xmax", "ymin", "ymax"), help='limits of FFT window')
+    parser.add_argument('--logscale', action='store_true',
+        help="Use log scale for output")
+    parser.add_argument('--fftlogscale', action='store_true',
+        help="Use log scale for fft output")
+    parser.add_argument('--clim', dest='clim', type=float, nargs=2,
+        metavar=("cmin", "cmax"), help="colour axis limits")
+    parser.add_argument('--fftclim', dest='fftclim', type=float, nargs=2,
+        metavar=("cmin", "cmax"), help="fft colour axis limits")
+    parser.add_argument('--verbose','-v',action='store_true',
+        help="give verbose (debugging) output")
+    parser.add_argument('--species',default='electron',
+        help="Species for density plot")
+    parser.add_argument('--prefix','-p',default='',
+        help="file prefix")
+    return(parser.parse_args())
+
+
+def debug(*debuginfo):
+    if args.verbose:
+        print(''.join(map(str,debuginfo)))
+
+
+def fft_process(filename):
+    
+    try:
+        filedata = sdf.read(filename)
+        x = filedata.Grid_Grid_mid.data[0]
+        y = filedata.Grid_Grid_mid.data[1]
+        dens = getattr(filedata, 'Derived_Number_Density_{0}'.format(args.species)).data
+    except:
+        print("Problem analyzing {0}, file corrupted or missing data".format(filename))
+        return(None)
+
+    debug("Initial x.shape: {}".format(x.shape))
+    debug("Initial y.shape: {}".format(y.shape))
+    debug("Initial dens.shape: {}".format(dens.shape))
+
+    if args.limits:
+        xmin = (np.abs(x-args.limits[0])).argmin()
+        xmax = (np.abs(x-args.limits[1])).argmin()
+        ymin = (np.abs(y-args.limits[2])).argmin()
+        ymax = (np.abs(y-args.limits[3])).argmin()
+        debug("x limits, {}: {} -- {}: {}".format(xmin,x[xmin],xmax,x[xmax]))
+        debug("y limits, {}: {} -- {}: {}".format(ymin,y[ymin],ymax,y[ymax]))
+        x = x[xmin:xmax+1]
+        y = y[ymin:ymax+1]
+        dens = dens[xmin:xmax+1,ymin:ymax+1]
+
+    debug("New x.shape: {}".format(x.shape))
+    debug("New y.shape: {}".format(y.shape))
+    debug("New dens.shape: {}".format(dens.shape))
+
+    densfft = np.power(np.abs(np.fft.fftshift(np.fft.fft2(dens))),2)
+    freqx = np.fft.fftshift(np.fft.fftfreq(len(x),np.abs(x[3]-x[2])))
+    freqy = np.fft.fftshift(np.fft.fftfreq(len(y),np.abs(y[3]-y[2])))
+    densfftint = np.sum(densfft,axis=1)
+    debug("2D FFT array shape {0}, summed to {1}".format(densfft.shape, densfftint.shape))
+
+    if args.logscale:
+        normalise = LogNorm()
+    else:
+        normalise = None
+
+    if args.fftlogscale:
+        fftplotfunc = "semilogy"
+    else:
+        fftplotfunc = "plot"
+
+    cmin = args.clim[0] if args.clim else (dens.min() if dens.min() > 2 else 2)
+    cmax = args.clim[1] if args.clim else dens.max()
+    fftcmin = args.fftclim[0] if args.fftclim else densfft.min()
+    fftcmax = args.fftclim[1] if args.fftclim else densfft.max()
+
+    debug("Density scale range {} - {}".format(cmin,cmax))
+    debug("FFT amplitude range {} - {}".format(fftcmin,fftcmax))
+
+    fig = plt.figure()
+    ax = []
+    #ax.append(fig.add_subplot(111, projection='3d'))
+    ax.append(plt.subplot2grid((2,2),(0,0),colspan=2))
+    ax.append(plt.subplot2grid((2,2),(1,0),colspan=2))
+    im = []
+    im.append(ax[0].imshow(np.rot90(dens),aspect='auto',cmap=plt.get_cmap('CMRmap'),
+        vmin=cmin, vmax=cmax, norm=normalise, interpolation='none',
+        extent=[x.min(), x.max(), y.min(), y.max()]))
+    ax[0].set_xlabel("$x (\mathrm{m})$")
+    ax[0].set_ylabel("$y (\mathrm{m})$")
+    #im.append(ax[1].semilogy(freqx,densfftint))
+    im.append(getattr(ax[1], fftplotfunc)(freqx,densfftint))
+    ax[1].set_xlabel("$k_x (\mathrm{m^{-1}})$")
+    ax[1].set_ylabel("$f(k_x) (\mathrm{arb.})$")
+    ax[1].set_xlim(0,freqx.max())
+    divider = []
+    divider.append(make_axes_locatable(ax[0]))
+    divider.append(make_axes_locatable(ax[1]))
+    cax = []
+    cax.append(divider[0].append_axes('right', size='5%', pad=0.05))
+    cax[0].set_label("$n_e (\mathrm{m^{-3}})$")
+    plt.colorbar(im[0], cax=cax[0])
+
+#  m = cm.ScalarMappable(cmap=cm.jet)
+#  m.set_array(densfft)
+#  plt.colorbar(m, cax=cax[0])
+    x_px = 1920
+    y_px = 1080
+    y_size=8
+    x_size=y_size*x_px / y_px
+    plt.gcf().set_size_inches(x_size,y_size)
+    savepath = ("{0}{1}_1dfft".format(args.prefix,filename[:-4]))
+    debug(savepath)
+    plt.savefig(savepath,dpi=x_px/x_size)
+    plt.close()
+
+
+def main():
+    global args
+    args = argument_parse()
+    
+    for filenum in args.sdffiles:
+        filename = "{0:04d}.sdf".format(filenum)
+        fft_process(filename)
+        
+     
+if __name__ == "__main__":
+    main()
+

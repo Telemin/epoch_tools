@@ -1,0 +1,261 @@
+#!/usr/bin/env python
+# vim: set fileencoding=UTF-8
+
+import argparse
+import epochtools_common as ec
+
+import sdf
+import math
+import numpy as np
+
+import matplotlib
+matplotlib.use('Agg')  
+from matplotlib.colors import LogNorm
+from matplotlib.patches import Rectangle
+from mpl_toolkits.axes_grid1 import make_axes_locatable
+from mpl_toolkits.mplot3d import Axes3D
+import matplotlib.pyplot as plt
+
+def centers(bins):
+  return(0.5*(bins[1:]+bins[:-1]))
+
+def argument_parse():
+  parser = argparse.ArgumentParser(description='Analyze counterstreaming species')
+  parser.add_argument('sdfFile', metavar='NNNN', type=int,
+                   help='SDF file to be processed')
+  parser.add_argument('xrange', nargs=2, type=float,
+                   help='x range to analyze')
+  parser.add_argument('yrange', nargs=2, type=float,
+                   help='y range to analyze')
+  parser.add_argument('--logscale', action='store_true',
+    help="Use log scale for density plot")
+  parser.add_argument('--clim', dest='clim', type=float, nargs=2,
+    metavar=("cmin", "cmax"), help="density plot colour axis limits")
+  parser.add_argument('--verbose','-v',action='store_true',
+    help="give verbose (debugging) output")
+  parser.add_argument('--prefix','-p',default='',
+    help="file prefix")
+  return(parser.parse_args())
+
+def debug(*debuginfo):
+  if args.verbose:
+    print(''.join(map(str,debuginfo)))
+
+def process_file(filename):
+  try:
+    sdf_data = sdf.SDF(filename).read()
+  except:
+    print("Failed to open file {0}".format(filename))
+    exit()
+  return sdf_data
+
+def main():
+  global args
+  args = argument_parse()
+  
+  filename = "{0:04d}.sdf".format(args.sdfFile)
+  sdf_data = ec.read_sdf(filename)
+  
+  fgridX = sdf_data['Grid/Grid/X']
+  fgridY = sdf_data['Grid/Grid/Y']
+  fgridNodesX = sdf_data['Grid/Grid_node/X']
+  fgridNodesY = sdf_data['Grid/Grid_node/Y']
+  fdens = sdf_data['Derived/Number_Density/electron']
+
+  particles = np.column_stack((
+      sdf_data['Grid/Particles/electron/X'],
+      sdf_data['Grid/Particles/electron/Y'],
+      sdf_data['Particles/Px/electron'],
+      sdf_data['Particles/Py/electron'],
+      sdf_data['Particles/Weight/electron']))
+
+  gridMultiplier = 1.0
+
+  particles = particles[particles[:,1].argsort()]
+  yRangeMin = min(args.yrange)
+  yRangeMax = max(args.yrange)
+  argmin = np.searchsorted(particles[:,1], [yRangeMin])[0]
+  argmax = np.searchsorted(particles[:,1], [yRangeMax])[0]
+  particles = particles[argmin:argmax,:]
+
+  yGridMin = np.searchsorted(fgridY,[yRangeMin])
+  yGridMax = np.searchsorted(fgridY, [yRangeMax])
+  gridNodesY = fgridNodesY[yGridMin:yGridMax+1]
+  gridY = fgridY[yGridMin:yGridMax]
+  
+  deltaYRange = (yRangeMax - yRangeMin) 
+  yGridDensMin = np.searchsorted(fgridY,[yRangeMin - gridMultiplier*deltaYRange])
+  yGridDensMax = np.searchsorted(fgridY, [yRangeMax + gridMultiplier*deltaYRange])
+  gridNodesDensY = fgridNodesY[yGridDensMin:yGridDensMax+1]
+  gridDensY = fgridY[yGridDensMin:yGridDensMax]
+  dens = fdens[yGridDensMin:yGridDensMax,:]
+
+  particles = particles[particles[:,0].argsort()]
+  xRangeMin = min(args.xrange)
+  xRangeMax = max(args.xrange)
+  argmin = np.searchsorted(particles[:,0], [xRangeMin])[0]
+  argmax = np.searchsorted(particles[:,0], [xRangeMax])[0]
+  particles = particles[argmin:argmax,:]
+
+  xGridMin = np.searchsorted(fgridX,[xRangeMin])
+  xGridMax = np.searchsorted(fgridX, [xRangeMax])
+  gridNodesX = fgridNodesX[xGridMin:xGridMax+1]
+  gridX = fgridX[xGridMin:xGridMax]
+  
+  deltaXRange = (xRangeMax - xRangeMin)
+  xGridDensMin = np.searchsorted(fgridX,[xRangeMin - gridMultiplier*deltaXRange])
+  xGridDensMax = np.searchsorted(fgridX, [xRangeMax + gridMultiplier*deltaXRange])
+  gridNodesDensX = fgridNodesX[xGridDensMin:xGridDensMax+1]
+  gridDensX = fgridX[xGridDensMin:xGridDensMax]
+  dens = fdens[xGridDensMin:xGridDensMax,:]
+
+  print("sorting left and right")
+  particlesLeft = particles[np.where(particles[:,3] < 0)]
+  particlesRight = particles[np.where(particles[:,3] > 0)]
+  
+  print("histogramming")
+  densLeft, densBinsLeft = np.histogram(particlesLeft[:,1],
+    weights=particlesLeft[:,4], bins=gridNodesY)
+  densRight, densBinsRight = np.histogram(particlesRight[:,1],
+    weights=particlesRight[:,4], bins=gridNodesY)
+
+  #normalise in x for densities
+
+  print(gridNodesX.max() - gridNodesX.min())
+
+  pxLeft, pxBinsLeft = np.histogram(particlesLeft[:,2],
+    weights=particlesLeft[:,4], bins=100)
+  pxRight, pxBinsRight = np.histogram(particlesRight[:,2],
+    weights=particlesRight[:,4], bins=100)
+ 
+  pyLeft, pyBinsLeft = np.histogram(particlesLeft[:,3],
+    weights=particlesLeft[:,4], bins=100)
+  pyRight, pyBinsRight = np.histogram(particlesRight[:,3],
+    weights=particlesRight[:,4], bins=100)
+ 
+  meanPxLeft = np.sum(particlesLeft[:,2]*particlesLeft[:,4])/np.sum(particlesLeft[:,4])
+  meanPxRight = np.sum(particlesRight[:,2]*particlesRight[:,4])/np.sum(particlesRight[:,4])
+
+  meanPx2Left = (np.sum(np.power(particlesLeft[:,2],2)*particlesLeft[:,4]) /
+                  np.sum(particlesLeft[:,4]))
+  meanPx2Right = (np.sum(np.power(particlesRight[:,2],2)*particlesRight[:,4]) /
+                  np.sum(particlesRight[:,4]))
+
+  sigmaPxLeft = math.sqrt(meanPx2Left - math.pow(meanPxLeft,2))
+  sigmaPxRight = math.sqrt(meanPx2Right - math.pow(meanPxRight,2))
+
+  meanPyLeft = np.sum(particlesLeft[:,3]*particlesLeft[:,4])/np.sum(particlesLeft[:,4])
+  meanPyRight = np.sum(particlesRight[:,3]*particlesRight[:,4])/np.sum(particlesRight[:,4])
+
+  meanPy2Left = (np.sum(np.power(particlesLeft[:,3],2)*particlesLeft[:,4]) /
+                  np.sum(particlesLeft[:,4]))
+  meanPy2Right = (np.sum(np.power(particlesRight[:,3],2)*particlesRight[:,4]) /
+                  np.sum(particlesRight[:,4]))
+
+  sigmaPyLeft = math.sqrt(meanPy2Left - math.pow(meanPyLeft,2))
+  sigmaPyRight = math.sqrt(meanPy2Right - math.pow(meanPyRight,2))
+
+  kgms2mev = 5.344286e-22
+  density_modifier = (gridNodesY[1] - gridNodesY[0])*(gridNodesX.max() - gridNodesX.min())
+
+  densLeft /= density_modifier 
+  densRight /= density_modifier
+
+  pxBinsLeft /= kgms2mev
+  pxBinsRight /= kgms2mev
+
+  pyBinsLeft /= kgms2mev
+  pyBinsRight /= kgms2mev
+
+  pxLeft /= density_modifier
+  pxRight /= density_modifier
+  meanPxLeft /= kgms2mev
+  meanPxRight /= kgms2mev
+  sigmaPxLeft /= kgms2mev
+  sigmaPxRight /= kgms2mev
+
+  pyLeft /= density_modifier
+  pyRight /= density_modifier
+  meanPyLeft /= kgms2mev
+  meanPyRight /= kgms2mev
+  sigmaPyLeft /= kgms2mev
+  sigmaPyRight /= kgms2mev
+
+  print("pyleft: {0}".format(meanPyLeft))
+  print("sigmapyleft: {0}".format(sigmaPyLeft))
+  print("pyright: {0}".format(meanPyRight))
+  print("sigmapyright: {0}".format(sigmaPyRight))
+  
+  
+  if args.logscale:
+    normalise = LogNorm()
+  else:
+    normalise = None
+
+  cmin = args.clim[0] if args.clim else (dens.min() if dens.min() > 2 else 2)
+  cmax = args.clim[1] if args.clim else dens.max()
+
+  print("pyleft: {0}".format(meanPyLeft))
+  print("pyright: {0}".format(meanPyRight))
+
+  fig = plt.figure()
+  fig.subplots_adjust(hspace=0.2)
+  ax = []
+  plotGrid=(3,2) #rows,cols
+  ax = [ (plt.subplot2grid(plotGrid, (0,0)),[]),
+    (plt.subplot2grid(plotGrid, (0,1)),[]),
+    (plt.subplot2grid(plotGrid, (1,0),colspan=2),[]),
+    (plt.subplot2grid(plotGrid, (2,0),colspan=2),[])]
+  
+  fig.set_size_inches(8,11)
+
+  fig.suptitle("Density and momentum analysis of counterstreaming electron "
+    "populations.\n Left (right) refer to propagation in -ve (+ve) y-direction")
+
+  ax[0][1].append(ax[0][0].imshow(np.rot90(dens), extent=[gridDensX.min(),
+    gridDensX.max(), gridDensY.min(), gridDensY.max()], aspect='auto',
+    norm=normalise, interpolation='none', vmin=cmin, vmax=cmax))
+  ax[0][0].set_xlim(gridDensX.min(), gridDensX.max())
+  ax[0][0].set_ylim(gridDensY.min(), gridDensY.max())
+  ax[0][0].add_artist(Rectangle((xRangeMin,yRangeMin),deltaXRange,deltaYRange,
+    color='white', alpha=0.5))
+  ax[0][0].ticklabel_format(style= 'sci', scilimits=(-2,2))
+
+  ax[1][1].append(ax[1][0].plot(centers(densBinsLeft),densLeft, label="left"))
+  ax[1][1].append(ax[1][0].plot(centers(densBinsRight),densRight, label="right"))
+  ax[1][0].ticklabel_format(style= 'sci', scilimits=(-2,2))
+  ax[1][0].set_xlim(yRangeMin,yRangeMax)
+  ax[1][0].set_xlabel(r'$y\ \mathrm{(m)}$')
+  ax[1][0].set_ylabel(r'$n_e\ \mathrm{(m^{-3})}$')
+  ax[1][0].legend(fontsize='small')
+
+  ax[2][1].append(ax[2][0].plot(centers(pxBinsLeft), pxLeft,label="left"))
+  ax[2][1].append(ax[2][0].plot(centers(pxBinsRight), pxRight, label="right"))
+  ax[2][1].append(ax[2][0].text(0.15,0.75,
+    r'$<p_{{x,left}}>={0:.3g}\ \mathrm{{MeV/c}}\ \ '
+    '\sigma_{{p_x,left}}={1:.3g}\ \mathrm{{MeV/c}}$\n'
+    '$<p_{{x,right}}>={2:.3g}\ \mathrm{{MeV/c}}\ \ '
+    '\sigma_{{p_x,right}}={3:.3g}\ \mathrm{{MeV/c}}$'
+    ''.format(meanPxLeft,sigmaPxLeft,meanPxRight,sigmaPxRight),
+    transform=ax[2][0].transAxes))
+  ax[2][0].legend(fontsize='small')
+
+  ax[3][1].append(ax[3][0].plot(centers(pyBinsLeft), pyLeft,label="left"))
+  ax[3][1].append(ax[3][0].plot(centers(pyBinsRight), pyRight, label="right"))
+  ax[3][1].append(ax[3][0].text(0.05,0.65,
+    '$<p_{{y,left}}>={0:.3g}\ \mathrm{{MeV/c}}$\n'
+    '$\sigma_{{p_y,left}}={1:.3g}\ \mathrm{{MeV/c}}$\n'
+    '$<p_{{y,right}}>={2:.3g}\ \mathrm{{MeV/c}}$\n'
+    '$\sigma_{{p_y,right}}={3:.3g}\ \mathrm{{MeV/c}}$'
+    ''.format(meanPyLeft,sigmaPyLeft,meanPyRight,sigmaPyRight),
+    transform=ax[3][0].transAxes))
+  ax[3][0].legend(fontsize='small')
+
+
+
+  plt.savefig("counterstream_{0:04d}".format(args.sdfFile))
+
+  
+if __name__ == "__main__":
+  main()
+

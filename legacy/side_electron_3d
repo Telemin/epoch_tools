@@ -1,0 +1,318 @@
+#!/usr/bin/env python2
+# vim: set fileencoding=UTF-8
+
+import re
+import os
+import sys
+from distutils import spawn
+import argparse
+import functools
+import math
+import subprocess as sp
+import time
+import multiprocessing as mp
+import copy
+
+import epochtools_common as ec
+from pyutils.debugging import timeprint, debug
+
+import matplotlib
+#matplotlib.use('agg')  
+from matplotlib.colors import LogNorm, SymLogNorm
+from mpl_toolkits.axes_grid1 import make_axes_locatable
+from matplotlib.ticker import MaxNLocator, NullLocator, FixedLocator
+import matplotlib.pyplot as plt
+import numpy as np
+import sdf
+
+class PlotParams():
+  def __init__(self,xmin=None,xmax=None,xvar=None,
+                    ymin=None,ymax=None,yvar=None,
+                    zmin=None,zmax=None,zvar=None,
+                    cmin=None,cmax=None,cvar=None):
+    self.xmin=xmin
+    self.xmax=xmax
+    self.xvar=xvar
+    self.ymin=ymin
+    self.ymax=ymax
+    self.yvar=yvar
+    self.zmin=zmin
+    self.zmax=zmax
+    self.zvar=zvar
+    self.cmin=cmin
+    self.cmax=cmax
+    self.cvar=cvar
+
+  def list_lims(self):
+    return([self.xmin,self.xmax,self.ymin,self.ymax])
+
+def centers(bins):
+  return(0.5*(bins[1:]+bins[:-1]))
+
+def defaulter(args,default,evaluator):
+  
+  try:
+    res = evaluator(args)
+  except:
+    res = default
+  return(res)
+
+
+def argument_parse():
+
+# Set up parser and global options
+  parser = argparse.ArgumentParser(description='Find density FFT')
+  parser.add_argument('--outputprefix','-p',dest='outputPrefix',type=str,
+    metavar="prefix", help="prefix to apply to output file(s)")
+  parser.add_argument('--outputdir','-d',dest='outputDir',type=str,
+    metavar="dir", help="directory to hold output files, defaults to {mode}")
+  parser.add_argument('--xfinal','-x',dest='xfinal',type=float, default=4e-2,
+    metavar="x", help="directory to hold output files, defaults to {mode}")
+  parser.add_argument('--gamma','-g',dest='gamma',type=float, default=2.0,
+    metavar="x", help="directory to hold output files, defaults to {mode}")
+  parser.add_argument('--radius','-r',dest='radius',type=float,default=5e-2,
+    metavar="r", help="Radius of simulated film") 
+  parser.add_argument('--exclude','-e',dest='exclude',action='append',
+    metavar="patt", help="exclude filenames matching regex 'patt', " 
+    "may be used more than once")
+  
+  return(parser.parse_args())
+
+
+def get_ejected(filename,minpx):
+  sdf_data = ec.read_sdf(filename)
+
+  try:
+    particles = np.column_stack(
+      (sdf_data['Grid/Particles/ejected_electron/X'],
+      sdf_data['Grid/Particles/ejected_electron/Y'],
+      sdf_data['Grid/Particles/ejected_electron/Z'],
+      sdf_data['Particles/Px/ejected_electron'],
+      sdf_data['Particles/Py/ejected_electron'],
+      sdf_data['Particles/Pz/ejected_electron'],
+      sdf_data['Particles/Q/ejected_electron']))
+    print("{0}: found {1}".format(filename,particles.shape[0]))
+
+    particles = particles[np.where(particles[:,3] > minpx)]
+    print("{0}: selected {1}".format(filename,particles.shape[0]))
+    
+    return(particles)
+
+  except KeyError:
+    print("{0}: No particles ejected...".format(filename))
+    pass
+
+  return(None)
+
+def main():
+
+  global args
+  args = argument_parse()
+
+  prefix = ''
+  if args.outputPrefix:
+    prefix = args.outputPrefix
+
+  if args.outputDir:
+    output = args.outputDir
+    ec.mkdir(output)
+  else:
+    output = ''
+
+  me = 9.10938291e-31
+  c0 = 299792458.0
+
+  minpx = me * c0 * math.sqrt(math.pow(args.gamma,2) - 1)
+
+ 
+  sdfList = [f for f in os.listdir(os.getcwd()) if f.endswith('.sdf')]
+  sdfList.sort()
+  if len(sdfList) == 0:
+    print("No SDF files found!")
+    sys.exit(0)
+
+  if args.exclude:
+    for pattern in args.exclude:
+      try:
+        eP = re.compile(pattern)
+      except:
+        print("Skipping invalid regex pattern {0}".format(pattern))
+        continue
+      for sdfFile in sdfList:
+        if eP.search(sdfFile):
+          sdfList.remove(sdfFile)
+
+  ejected = []
+  for sdfFile in sdfList:
+    ejected.append(get_ejected(sdfFile,minpx))
+
+  sdf_data = ec.read_sdf(sdfList[-1])
+
+  try:
+    particles = np.column_stack((
+      sdf_data['Grid/Particles/electron/X'],
+      sdf_data['Grid/Particles/electron/Y'],
+      sdf_data['Grid/Particles/electron/Z'],
+      sdf_data['Particles/Px/electron'],
+      sdf_data['Particles/Py/electron'],
+      sdf_data['Particles/Pz/electron'],
+      sdf_data['Particles/Q/electron']))
+    print("Last frame {0}: found {1}".format(sdfFile,particles.shape))
+
+    particles = particles[np.where(particles[:,3] > minpx)]
+    print("Last frame {0}: selected {1}".format(sdfFile,particles.shape))
+
+    ejected.append(particles)
+
+  except Exception as e:
+    print(e)
+    print("Failed to get final frame electrons")
+    return(-1) 
+
+  ejected = [ i for i in ejected if not type(i) == type(None)]
+  ejected_temp = np.vstack(ejected)
+
+  ejected = np.zeros((ejected_temp.shape[0],ejected_temp.shape[1]+6))
+  ejected[:,:-6] = ejected_temp
+
+  ejected[:,7] = (1e-6/1.602e-19) * np.sqrt((np.power(ejected[:,3],2) +
+    np.power(ejected[:,4],2) + np.power(ejected[:,5],2)) * math.pow(c0,2) +
+    math.pow(me * math.pow(c0,2),2))
+  ejected[:,8] = (ejected[:,4]/ejected[:,3])*(args.xfinal - ejected[:,0]) + ejected[:,1]
+  ejected[:,9] = (ejected[:,5]/ejected[:,3])*(args.xfinal - ejected[:,0]) + ejected[:,2]
+  ejected[:,10] = np.arctan(ejected[:,8]/args.xfinal)
+  ejected[:,11] = np.arctan(ejected[:,9]/args.xfinal)
+  ejected[:,12] = np.sqrt(np.power(ejected[:,8],2) + np.power(ejected[:,9],2))
+
+
+  qy,y = np.histogram(ejected[:,8],weights=ejected[:,6],bins=200,range=(-args.radius,args.radius))
+  qz,z = np.histogram(ejected[:,9],weights=ejected[:,6],bins=200,range=(-args.radius,args.radius))
+  qr,r = np.histogram(ejected[:,12],weights=ejected[:,6],bins=100,range=(0,args.radius))
+
+  qtheta,theta =  np.histogram(ejected[:,10],weights=ejected[:,6],bins=200,range=(-np.pi/2,np.pi/2))
+  qphi,phi = np.histogram(ejected[:,11],weights=ejected[:,6],bins=200,range=(-np.pi/2,np.pi/2))
+
+  dens, W, thet = np.histogram2d(ejected[:,7],ejected[:,10],weights=ejected[:,6],
+    bins=(100,100),range=((0,20),(-np.pi/2,np.pi/2)))
+
+  qyz,yy,zz = np.histogram2d(ejected[:,8],ejected[:,9],weights=ejected[:,6],
+        bins=(200,200),range=((-args.radius,args.radius),(-args.radius,args.radius)))
+ 
+  totalq = np.sum(ejected[:,6])*1e15
+
+  print("Total charge is {0} pC".format(totalq))
+
+  qthetaphi,ttheta,pphi = np.histogram2d(ejected[:,10],ejected[:,11],
+                        weights=ejected[:,6],bins=(1000,1000)
+                        ,range=((-np.pi/2,np.pi/2),(-np.pi/2,np.pi/2)))
+
+  fig = plt.figure()
+  ax = fig.add_subplot(1,1,1)
+  im = ax.plot(centers(y),qy)
+  ax.set_xlim(-args.radius,args.radius)
+  ax.set_ylim(ax.get_ylim()[::-1])
+  ax.ticklabel_format(style= 'sci', scilimits=(-2,2))
+  ax.set_xlabel(r'$y \mathrm{(m)}$')
+  ax.set_ylabel(r'$dq \mathrm{(C/m)}$')
+  ax.set_title("Forward Charge Distribution at 4cm")
+  ax.text(0.05,0.88,"Charge distribution at the distance of the film used in the\n"
+    "experimental setup has been extrapolated using the final momenta of all\n"
+    "ejected electrons with $\gamma > {0}$ and momentum in the forward "
+    "direction.".format(args.gamma),
+    transform=ax.transAxes)
+  plt.savefig("hist_y")
+
+  fig = plt.figure()
+  ax = fig.add_subplot(1,1,1)
+  im = ax.plot(centers(z),qz)
+  ax.set_xlim(-args.radius,args.radius)
+  ax.set_ylim(ax.get_ylim()[::-1])
+  ax.ticklabel_format(style= 'sci', scilimits=(-2,2))
+  ax.set_xlabel(r'$z \mathrm{(m)}$')
+  ax.set_ylabel(r'$dq \mathrm{(C/m)}$')
+  ax.set_title("Forward Charge Distribution at 4cm")
+  ax.text(0.05,0.88,"Charge distribution at the distance of the film used in the\n"
+    "experimental setup has been extrapolated using the final momenta of all\n"
+    "ejected electrons with $\gamma > {0}$ and momentum in the forward "
+    "direction.".format(args.gamma),
+    transform=ax.transAxes)
+  plt.savefig("hist_z")
+  
+  fig = plt.figure()
+  ax = fig.add_subplot(1,1,1)
+  im = ax.plot(centers(r),qr)
+  ax.set_xlim(0,args.radius)
+  ax.set_ylim(ax.get_ylim()[::-1])
+  ax.ticklabel_format(style= 'sci', scilimits=(-2,2))
+  ax.set_xlabel(r'$r \mathrm{(m)}$')
+  ax.set_ylabel(r'$dq \mathrm{(C/m)}$')
+  ax.set_title("Forward Charge Distribution at 4cm")
+  ax.text(0.05,0.88,"Charge distribution at the distance of the film used in the\n"
+    "experimental setup has been extrapolated using the final momenta of all\n"
+    "ejected electrons with $\gamma > {0}$ and momentum in the forward "
+    "direction.".format(args.gamma),
+    transform=ax.transAxes)
+  plt.savefig("hist_r")
+ 
+  fig = plt.figure()
+  ax = fig.add_subplot(1,1,1)
+  im = ax.plot(centers(theta),qtheta)
+  ax.set_xlim(-np.pi/2,np.pi/2)
+  ax.set_ylim(ax.get_ylim()[::-1])
+  ax.ticklabel_format(style= 'sci', scilimits=(-2,2))
+  ax.set_xlabel(r'$\theta \mathrm{(rad)}$')
+  ax.set_ylabel(r'$dq \mathrm{(C/rad)}$')
+  ax.set_title("Forward Charge Distribution at 4cm")
+  ax.text(0.05,0.88,"Charge distribution at the distance of the film used in the\n"
+    "experimental setup has been extrapolated using the final momenta of all\n"
+    "ejected electrons with $\gamma > {0}$ and momentum in the forward "
+    "direction.".format(args.gamma),
+    transform=ax.transAxes)
+  plt.savefig("hist_theta")
+
+  fig = plt.figure()
+  ax = fig.add_subplot(1,1,1)
+  im = ax.plot(centers(phi),qphi)
+  ax.set_xlim(-np.pi/2,np.pi/2)
+  ax.set_ylim(ax.get_ylim()[::-1])
+  ax.ticklabel_format(style= 'sci', scilimits=(-2,2))
+  ax.set_xlabel(r'$\phi \mathrm{(rad)}$')
+  ax.set_ylabel(r'$dq \mathrm{(C/rad)}$')
+  ax.set_title("Forward Charge Distribution at 4cm")
+  ax.text(0.05,0.88,"Charge distribution at the distance of the film used in the\n"
+    "experimental setup has been extrapolated using the final momenta of all\n"
+    "ejected electrons with $\gamma > {0}$ and momentum in the forward "
+    "direction.".format(args.gamma),
+    transform=ax.transAxes)
+  plt.savefig("hist_phi")
+
+  fig = plt.figure()
+  ax = fig.add_subplot(1,1,1)
+  im = ax.imshow(np.rot90(-qyz), extent=(yy.min(),yy.max(),zz.min(),zz.max()),
+    norm=LogNorm(),aspect='auto')
+  #im = ax.plot(ejected[:,7],ejected[:,5],'.k')
+  divider = make_axes_locatable(ax)
+  cax = divider.append_axes('right', size='5%', pad=0.05)
+  cb = plt.colorbar(im, cax=cax)
+  ax.set_xlabel(r'$y\ \mathrm{(m)}$')
+  ax.set_ylabel(r'$z\ \mathrm{(m)}$')
+  cb.set_label(r'$\-rho\ \mathrm{(C\ m^{-2})}$')
+  plt.savefig("2d_charge")
+
+  fig = plt.figure()
+  ax = fig.add_subplot(1,1,1)
+  im = ax.imshow(np.flipud(dens), extent=(-np.pi/2,np.pi/2,0,20),aspect='auto')
+  #im = ax.plot(ejected[:,7],ejected[:,5],'.k')
+  divider = make_axes_locatable(ax)
+  cax = divider.append_axes('right', size='5%', pad=0.05)
+  cb = plt.colorbar(im, cax=cax)
+  ax.set_xlabel(r'$\theta\ \mathrm{(rad)}$')
+  ax.set_ylabel(r'$E\ \mathrm{(MeV)}$')
+  cb.set_label(r'$\rho\ \mathrm{(C\ MeV^{-1}\ rad^{-1})}$')
+  plt.savefig("energy_theta")
+
+  print(ejected.shape)
+
+
+if __name__ == "__main__":
+  main()

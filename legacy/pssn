@@ -1,0 +1,83 @@
+#!/usr/bin/env python
+# vim: set fileencoding=UTF-8
+
+import argparse
+import os.path
+
+import sdf
+import numpy as np
+
+import matplotlib
+matplotlib.use('agg')
+import matplotlib.backends.backend_agg as mba
+import matplotlib.figure as mf
+import matplotlib.animation as ma
+
+class PlotHolder():
+  pass
+
+def argument_parse():
+
+# Set up parser and global options
+  parser = argparse.ArgumentParser(description='Find density FFT')
+  parser.add_argument('partFile',type=str,
+    metavar="particlefile", help="field file to analyze")
+  parser.add_argument('slicesize',type=float,
+    metavar="slicesize", help="size of slice in x")
+  parser.add_argument('component',choices=['Px','Py','Pz'],
+    metavar="p?", help="momentum component to analyze")
+  parser.add_argument('--species',default='electron',
+    help="Species for phase space")
+  return(parser.parse_args())
+
+def main():
+
+  global args
+  args = argument_parse()
+
+  if not os.path.exists(os.path.join(os.getcwd(),args.partFile)):
+    print("File {0} does not exist!".format(args.partFile))
+    return
+
+  try:
+    partdata = sdf.SDF(args.partFile).read()
+    partX = partdata['Grid/Particles/{0}/X'.format(args.species)]
+    partY = partdata['Grid/Particles/{0}/Y'.format(args.species)]
+    partP = partdata['Particles/{0}/{1}'.format(args.component,args.species)]
+    partW = partdata['Particles/Weight/{0}'.format(args.species)]
+    gridX = partdata['Grid/Grid/X']
+    gridY = partdata['Grid/Grid/Y']
+  except Exception as err:
+    print(err)
+    print("Problem analyzing {0}, file corrupted or missing data".format(args.partFile))
+    return
+
+  print("reading and stacking")
+  partArray = np.column_stack((partX,partY,partP,partW))
+  print("sorting")
+  partArray = partArray[partArray[:,0].argsort()]
+
+  print("calculating ranges")
+  rangeXMin = np.arange(gridX.min(),gridX.max(),args.slicesize)
+  rangeXMax = rangeXMin + args.slicesize
+ 
+  print("creating figure")
+  fig = mf.Figure()
+  canvas = mba.FigureCanvasAgg(fig)
+  ax = fig.add_subplot(111)
+  scat = ax.scatter([],[],s=1,facecolor='0',lw=0,hatch='')
+  ax.set_xlim(gridY.min(),gridY.max())
+  ax.set_ylim(partP.min(),partP.max())
+ 
+  for plotrange in zip(*(rangeXMin,rangeXMax)):
+    print(plotrange)
+    argmin = np.searchsorted(partArray[:,0], [min(plotrange)])[0]
+    argmax = np.searchsorted(partArray[:,0], [max(plotrange)])[0]
+    print(argmin,argmax)
+    partY = partArray[argmin:argmax,1]
+    partP = partArray[argmin:argmax,2]
+    scat = ax.scatter(partY,partP,s=1,facecolor='0',lw=0,hatch='')
+    fig.savefig('{0}-{1}.png'.format(plotrange[0],plotrange[1]),format='png')
+
+if __name__ == "__main__":
+  main()

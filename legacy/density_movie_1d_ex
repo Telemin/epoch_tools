@@ -1,0 +1,78 @@
+#!/usr/bin/env python
+# vim: set fileencoding=UTF-8
+
+import matplotlib
+matplotlib.use('Agg')  
+from matplotlib.colors import LogNorm
+from mpl_toolkits.axes_grid1 import make_axes_locatable
+import matplotlib.pyplot as plt
+import numpy as np
+import scipy.signal as sps
+import sdf
+import multiprocessing as mp
+import os
+import shutil
+from distutils import spawn
+
+def main():
+
+  try:
+    shutil.rmtree('movie')
+  except:
+    pass
+  try:
+    os.mkdir('movie')
+  except:
+    print('Problem creating movie directory, check perms?')
+    exit()
+  sdf_list = [f for f in os.listdir(os.getcwd()) if f.endswith('.sdf')]
+  worker_pool = mp.Pool(processes=mp.cpu_count())
+  worker_pool.map(mkimage, sdf_list)
+#  map(mkimage, sdf_list)
+  if spawn.find_executable('avconv'):
+    converter = spawn.find_executable('avconv')
+  elif spawn.find_executable('ffmpeg'):
+    converter = spawn.find_executable('ffmpeg')
+  else:
+    print("Couldn't find ffmpeg/avconv :(\n"
+          "you're on your own for making the movie)")
+    os.exit(1)
+
+  conv_args = [converter,'-r', '1', '-i', 'movie/%04d.png', '-c:v', 'libx264',
+              '-r', '30', '-pix_fmt', 'yuv420p','-y', 
+              ''.join((os.path.basename(os.getcwd()),'.mp4'))]
+  spawn.spawn(conv_args)
+
+def mkimage(filename):
+
+  filedata = sdf.SDF(filename).read()
+  x = filedata['Grid/Grid/X']
+  densun = filedata['Derived/Number_Density/electron']
+  ex = (np.abs(filedata['Electric Field/Ex'] ) + 1e-113)
+  dens = sps.medfilt(densun,11)
+#  dens = sps.wiener(densun)
+
+
+  fig = plt.figure()
+  ax = []
+  ax.append(plt.subplot2grid((2,1), (0,0)))
+  ax.append(plt.subplot2grid((2,1), (1,0)))
+
+
+  #ax[0].semilogy(x,dens)
+  ax[0].plot(x,dens)
+  ax[1].semilogy(x,ex)
+  #ax[0].set_ylim([3e24,3e26])
+  ax[1].set_ylim([1,1e15])
+  x_px = 1920
+  y_px = 1080
+  y_size=10
+  x_size=y_size*x_px / y_px
+  plt.gcf().set_size_inches(x_size,y_size)
+  savepath = os.path.join('movie',(filename[:-4]))
+  print(savepath)
+  plt.savefig(savepath,dpi=x_px/x_size)
+  plt.close()
+  
+if __name__ == '__main__':
+  main()

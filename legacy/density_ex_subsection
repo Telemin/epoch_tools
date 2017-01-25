@@ -1,4 +1,5 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python
+# vim: set fileencoding=UTF-8
 
 import sdf
 import re
@@ -7,22 +8,25 @@ import shutil
 import argparse
 import numpy as np
 import multiprocessing as mp
+
 from multiprocessing import Manager
 from distutils import spawn
 
 import matplotlib
 matplotlib.use('Agg')  
 from matplotlib import pylab
+import matplotlib.cm as cm
 from matplotlib.colors import LogNorm
 from mpl_toolkits.axes_grid1 import make_axes_locatable
+from mpl_toolkits.mplot3d import Axes3D
 import matplotlib.pyplot as plt
 
 def argument_parse():
   parser = argparse.ArgumentParser(description='Find density FFT')
   parser.add_argument('sdffiles', metavar='NNNN', type=int, nargs='+',
                    help='SDF file(s) to be processed')
-  parser.add_argument('--lim', dest='limits', type=float, nargs=2,
-    metavar=("xmin", "xmax"), help='limits of FFT window')
+  parser.add_argument('--lim', dest='limits', type=float, nargs=4,
+    metavar=("xmin", "xmax", "ymin", "ymax"), help='limits of FFT window')
   return(parser.parse_args())
 
 def process_file(filename):
@@ -38,48 +42,64 @@ def fft_process(filename):
   
   x = sdf_data['Grid/Grid/X']
   y = sdf_data['Grid/Grid/Y']
-  dens = sdf_data['Derived/Number_Density/electron'][:,int(len(y)/2)]
+  dens = sdf_data['Derived/Number_Density/electron']
+  ex = sdf_data['Electric Field/Ex']
   
   plotx = x
+  ploty = y
   plotdens = dens
-
-  print(x)
-  print(dens)
+  plotex = ex
 
   print("Initial x.shape: {}".format(x.shape))
+  print("Initial y.shape: {}".format(y.shape))
   print("Initial dens.shape: {}".format(dens.shape))
 
   if args.limits:
     xmin = (np.abs(x-args.limits[0])).argmin()
     xmax = (np.abs(x-args.limits[1])).argmin()
+    ymin = (np.abs(y-args.limits[2])).argmin()
+    ymax = (np.abs(y-args.limits[3])).argmin()
     print("x limits, {}: {} -- {}: {}".format(xmin,x[xmin],xmax,x[xmax]))
+    print("y limits, {}: {} -- {}: {}".format(ymin,y[ymin],ymax,y[ymax]))
     plotx = x[xmin:xmax+1]
-    plotdens = dens[xmin:xmax+1]
-
-  print(plotx)
-  print(plotdens)
+    ploty = y[ymin:ymax+1]
+    plotdens = dens[xmin:xmax+1,ymin:ymax+1]
+    plotex = ex[xmin:xmax+1,ymin:ymax+1]
 
   print("New x.shape: {}".format(plotx.shape))
+  print("New y.shape: {}".format(ploty.shape))
   print("New dens.shape: {}".format(plotdens.shape))
-
-  densfft = np.absolute(np.fft.rfft(plotdens))
-  freqx = np.fft.rfftfreq(len(plotx),np.abs(plotx[3]-plotx[2]))
-
-  print(zip(freqx,densfft))
-
-  plt.figure()
+  
+  fig = plt.figure()
   ax = []
+  #ax.append(fig.add_subplot(111, projection='3d'))
   ax.append(plt.subplot2grid((2,2),(0,0),colspan=2))
   ax.append(plt.subplot2grid((2,2),(1,0),colspan=2))
   im = []
-  im.append(ax[0].plot(plotx,plotdens))
-  im.append(ax[1].plot(freqx,densfft))
+  im.append(ax[0].imshow(np.rot90(plotdens), aspect='auto',
+    vmin=1e24, vmax=1e27, norm=LogNorm(),
+    extent=[plotx.min(), plotx.max(), ploty.min(), ploty.max()]))
+  im.append(ax[1].imshow(np.rot90(plotex), aspect='auto',
+    vmin=-1e12, vmax=02,
+    extent=[plotx.min(),plotx.max(),ploty.min(),ploty.max()]))
+  divider = []
+  divider.append(make_axes_locatable(ax[0]))
+  divider.append(make_axes_locatable(ax[1]))
+  cax = []
+  cax.append(divider[0].append_axes('right', size='5%', pad=0.05))
+  cax.append(divider[1].append_axes('right', size='5%', pad=0.05))
+  plt.colorbar(im[0], cax=cax[0])
+  plt.colorbar(im[1], cax=cax[1])
+
+#  m = cm.ScalarMappable(cmap=cm.jet)
+#  m.set_array(densfft)
+#  plt.colorbar(m, cax=cax[0])
   x_px = 1920
   y_px = 1080
   y_size=8
   x_size=y_size*x_px / y_px
   plt.gcf().set_size_inches(x_size,y_size)
-  savepath = ("{0}_fft".format(filename[:-4]))
+  savepath = ("{0}_dens_ex".format(filename[:-4]))
   print(savepath)
   plt.savefig(savepath,dpi=x_px/x_size)
   plt.close()

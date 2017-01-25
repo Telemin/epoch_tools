@@ -1,4 +1,5 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python
+# vim: set fileencoding=UTF-8
 
 import matplotlib
 matplotlib.use('Agg')  
@@ -10,10 +11,20 @@ import scipy.signal as sps
 import sdf
 import multiprocessing as mp
 import os
+import re
+import argparse
 import shutil
 from distutils import spawn
 
 def main():
+
+  parser = argparse.ArgumentParser(description='Find density FFT')
+  parser.add_argument('--exclude','-e',dest='exclude',action='append',
+    metavar="patt", help="exclude filenames matching regex 'patt', " 
+    "may be used more than once")
+
+  global args
+  args = parser.parse_args()
 
   try:
     shutil.rmtree('movie')
@@ -24,10 +35,20 @@ def main():
   except:
     print('Problem creating movie directory, check perms?')
     exit()
-  sdf_list = [f for f in os.listdir(os.getcwd()) if f.endswith('.sdf')]
-  worker_pool = mp.Pool(processes=mp.cpu_count())
-  worker_pool.map(mkimage, sdf_list)
-#  map(mkimage, sdf_list)
+  sdfList = [f for f in os.listdir(os.getcwd()) if f.endswith('.sdf')]
+  if args.exclude:
+    for pattern in args.exclude:
+      try:
+        eP = re.compile(pattern)
+      except:
+        print("Skipping invalid regex pattern {0}".format(pattern))
+        continue
+      for sdfFile in sdfList:
+        if eP.search(sdfFile):
+          sdfList.remove(sdfFile)
+#  worker_pool = mp.Pool(processes=mp.cpu_count())
+#  worker_pool.map(mkimage, sdfList)
+  f = list(map(mkimage, sdfList))
   if spawn.find_executable('avconv'):
     converter = spawn.find_executable('avconv')
   elif spawn.find_executable('ffmpeg'):
@@ -46,9 +67,9 @@ def mkimage(filename):
 
   filedata = sdf.SDF(filename).read()
   x = filedata['Grid/Grid/X']
-  densun = filedata['Derived/Number_Density/electron']
-  ex = (np.abs(filedata['Electric Field/Ex'] ) + 1e-113)
-  dens = sps.medfilt(densun,11)
+  y = filedata['Grid/Grid/Y']
+  dens = np.rot90(filedata['Derived/Number_Density/electron'])
+  ex = filedata['Electric Field/Ex']
 #  dens = sps.wiener(densun)
 
 
@@ -59,10 +80,10 @@ def mkimage(filename):
 
 
   #ax[0].semilogy(x,dens)
-  ax[0].plot(x,dens)
-  ax[1].semilogy(x,ex)
+  ax[0].imshow(dens,extent=[x.min(),x.max(),y.min(),y.max()],aspect='auto')
+  ax[1].plot(x,ex[:,int(ex.shape[1]/2)])
   #ax[0].set_ylim([3e24,3e26])
-  ax[1].set_ylim([1,1e15])
+  ax[1].set_xlim([x.min(),x.max()])
   x_px = 1920
   y_px = 1080
   y_size=10

@@ -1,0 +1,309 @@
+#!/usr/bin/env python
+# vim: set fileencoding=UTF-8
+
+import re
+import os
+import sys
+from distutils import spawn
+import argparse
+import functools
+import math
+import subprocess as sp
+import time
+import multiprocessing as mp
+import copy
+import pickle
+
+import epochtools_common as ec
+from pyutils.debugging import timeprint, debug
+
+import matplotlib
+matplotlib.use('agg')  
+from matplotlib.colors import LogNorm, SymLogNorm
+from mpl_toolkits.axes_grid1 import make_axes_locatable
+from matplotlib.ticker import MaxNLocator, NullLocator, FixedLocator
+import matplotlib.pyplot as plt
+import numpy as np
+import sdf
+
+class PlotParams():
+  def __init__(self,xmin=None,xmax=None,xvar=None,
+                    ymin=None,ymax=None,yvar=None,
+                    zmin=None,zmax=None,zvar=None,
+                    cmin=None,cmax=None,cvar=None):
+    self.xmin=xmin
+    self.xmax=xmax
+    self.xvar=xvar
+    self.ymin=ymin
+    self.ymax=ymax
+    self.yvar=yvar
+    self.zmin=zmin
+    self.zmax=zmax
+    self.zvar=zvar
+    self.cmin=cmin
+    self.cmax=cmax
+    self.cvar=cvar
+
+  def list_lims(self):
+    return([self.xmin,self.xmax,self.ymin,self.ymax])
+
+
+def defaulter(args,default,evaluator):
+  
+  try:
+    res = evaluator(args)
+  except:
+    res = default
+  return(res)
+
+
+def argument_parse():
+
+# Set up parser and global options
+  parser = argparse.ArgumentParser(description='Find density FFT')
+  parser.add_argument('fieldfile',type=str,
+    metavar="fieldfile", help="field file to analyze")
+  parser.add_argument('elp',type=float,nargs=4,
+    metavar=("xloc","xaxis","yloc","yaxis"), help="minimum forward gamma to select")
+  parser.add_argument('gammaMin',type=float,
+    metavar="gamma", help="minimum forward gamma to select")
+  parser.add_argument('--species',default='electron',
+    help="Species for phase space")
+  parser.add_argument('--sample',default=None,type=int,
+    metavar='n', help="Randomly choose only n particles matching criteria")
+  parser.add_argument('--xrange',type=float,nargs=2,
+    dest="xrange",metavar=("xmin","xmax"),
+    help="Zoom to xmin-xmax")
+  parser.add_argument('--yrange',type=float,nargs=2,
+    dest="yrange",metavar=("ymin","ymax"),
+    help="Zoom to ymin-ymax")
+  parser.add_argument('--drange',type=float,nargs=2,default=(None,None),
+    dest="dRange",metavar=("dmin","dmax"),
+    help="Fix scale for particle number density")
+  parser.add_argument('--verbose','-v',action='store_true',
+    help="give verbose (debugging) output")
+
+  return(parser.parse_args())
+
+
+def main():
+
+  global args
+  args = argument_parse()
+
+  fieldFile = args.fieldfile
+
+  if not os.path.exists(os.path.join(os.getcwd(),fieldFile)):
+    print("File {0} does not exist!".format(fieldFile))
+    sys.exit()
+
+  timeprint("Loading Data")
+
+  try:
+    partdata = sdf.SDF(fieldFile).read()
+    partID = partdata['Particles/ID/{0}'.format(args.species)]
+    debug('loaded partX')
+    partX = partdata['Grid/Particles/{0}/X'.format(args.species)]
+    debug('loaded partX')
+    partY = partdata['Grid/Particles/{0}/Y'.format(args.species)]
+    debug('loaded partY')
+    partPx = partdata['Particles/Px/{0}'.format(args.species)]
+    debug('loaded partPx')
+    partPy = partdata['Particles/Py/{0}'.format(args.species)]
+    debug('loaded partPy')
+    partPz = partdata['Particles/Pz/{0}'.format(args.species)]
+    debug('loaded partPz')
+    #partW = partdata['Particles/Weight/{0}'.format(args.species)]
+    #debug('loaded partW')
+  except Exception as err:
+    print(err)
+    print("Problem analyzing {0}, file corrupted or missing data".format(fieldFile))
+    sys.exit()
+
+  try:
+    sdfData = sdf.SDF(fieldFile).read()
+    dens=sdfData['Derived/Number_Density/{0}'.format(args.species)]
+    debug('loaded density')
+    gridNodesX = sdfData['Grid/Grid_node/X']
+    debug('loaded gridNodesX')
+    gridNodesY = sdfData['Grid/Grid_node/Y']
+    debug('loaded gridNodesY')
+    gridX = sdfData['Grid/Grid/X']
+    debug('loaded gridX')
+    gridY = sdfData['Grid/Grid/Y']
+    debug('loaded gridY')
+    eX = sdfData['Electric Field/Ex']
+    debug('loaded eX')
+    eY = sdfData['Electric Field/Ey']
+    debug('loaded eY')
+    bZ = sdfData['Magnetic Field/Bz']
+    debug('loaded bZ')
+
+  except:
+    print("Problem analyzing {0}, "
+      "file corrupted or missing data".format(fieldFile))
+    sys.exit()
+
+  timeprint("stacking...")
+  #partarray = np.column_stack((partID,partX,partY,partPx,partPy,partPz,partW))
+  partarray = np.column_stack((partID,partX,partY,partPx,partPy,partPz))
+
+  timeprint("selecting based on ellipse")
+  partarray = partarray[np.where((
+    ((partarray[:,1] - args.elp[0]) / args.elp[1])**2 +
+    ((partarray[:,2] - args.elp[2]) / args.elp[3])**2 <= 1))]
+
+  gammamin = args.gammaMin
+  alphamin = 1 / gammamin
+  me = 9.10938291e-31 
+  c = 299792458
+  pxmin = gammamin * me * c * math.sqrt(1 - alphamin**2)
+  
+  timeprint("selecting by pxmin = {0}".format(pxmin))
+  selected = partarray[np.where(partarray[:,3] > pxmin)]
+
+  if selected.shape[0] < 1:
+    timeprint("No particles match criteria")
+    sys.exit()
+
+  if args.sample:
+    selected = selected[np.random.choice(selected.shape[0],size=args.sample, replace=False)]
+  
+  timeprint("Selected {0} particles, plotting...".format(selected.shape[0]))
+
+  sX = selected[:,1]
+  sY = selected[:,2]
+  sPx = selected[:,3] / 5.344e-22
+  sPy = selected[:,4] / 5.344e-22 
+  sYdot = sPy / sPx
+
+
+  pxbar = np.sum(sPx) / sY.shape[0]
+  pxspread = math.sqrt(np.sum((sPx - pxbar)**2)/sY.shape[0])
+  y2bar = np.sum(sY**2) / sY.shape[0]
+  ydot2bar = np.sum(sYdot**2) / sY.shape[0]
+  yydotbar = np.sum(sYdot * sY) / sY.shape[0]
+  nfac = np.sum(selected[:,3]) / (sY.shape[0] * me * c)
+  print(nfac)
+
+  try:
+    temit = math.sqrt(y2bar*ydot2bar - yydotbar**2) * 1e6
+  except:
+    temit = 0
+
+  print("y: {0} = sqrt({1} * {2} - {3})".format(temit,y2bar,ydot2bar,yydotbar))
+
+### density plot
+  densityPlot = PlotParams(xmin=gridNodesX.min(),
+                           xmax=gridNodesX.max(),
+                           ymin=gridNodesY.min(),
+                           ymax=gridNodesY.max(),
+                           cvar=np.rot90(dens),
+                           cmin=defaulter(args.dRange,dens.min(),min),
+                           cmax=defaulter(args.dRange,dens.max(),max))
+
+  print(densityPlot.cmin, densityPlot.cmax)
+
+# set up figure, axes, colormaps
+  plt.figure()
+  ax = []
+  plotGrid=(2,2) #rows,cols
+  plots= [ (x,y) for x in range(0,plotGrid[0]) for y in range(0,plotGrid[1])]
+#  ax = [(plt.subplot2grid(plotGrid, plot),[]) for plot in plots]
+  ax = [(plt.subplot2grid(plotGrid, (0,0), colspan=2),[]),
+        (plt.subplot2grid(plotGrid, (1,0), colspan=1),[]),
+        (plt.subplot2grid(plotGrid, (1,1), colspan=1),[])]
+
+  
+
+  gc = plt.get_cmap('gnuplot')
+  gy = plt.get_cmap('Greys')
+  plt.gcf().suptitle("Transverse Trace Space Emittance for injected bunch")
+  plt.gcf().set_size_inches(20,11.25)
+
+# plot density
+  ax[0][1].append(ax[0][0].imshow(densityPlot.cvar,aspect='auto',interpolation='none',
+    extent=densityPlot.list_lims(),cmap=gc, vmin=densityPlot.cmin,
+    vmax=densityPlot.cmax))
+  ax[0][1].append(ax[0][0].plot(sX,sY,'k.'))
+  ax[0][0].set_ylim(densityPlot.ymin,densityPlot.ymax)
+  divider = make_axes_locatable(ax[0][0])
+  cax = divider.append_axes('right', size='5%', pad=0.05)
+  plt.colorbar(ax[0][1][0], cax=cax)
+  ax[0][0].set_xlabel("$x\ (\lambda_p)$")
+  ax[0][0].set_ylabel("$y\ (\lambda_p)$")
+
+# plot full phase space
+  ax[1][1].append(ax[1][0].scatter(sX, sPx,
+    s=1, facecolor='0', cmap=gc, lw=0,hatch=''))
+  ax[1][0].set_xlim(sX.min(),sX.max())
+  ax[1][0].set_ylim(sPx.min(),sPx.max())
+  ax[1][0].set_title("$\overline{{p_x}}={0:.3}\ \mathrm{{MeV}}"
+    "\ \sigma_{{p_x}}={1:.3}\ \mathrm{{MeV}}"
+    "\ = {2:.1f}\%$".format(pxbar,pxspread,(pxspread * 100 /pxbar)))
+  ax[1][0].set_xlabel("$x\ (\mathrm{m})$")
+  ax[1][0].set_ylabel("$p_x\ (\mathrm{MeV})$")
+
+# plot full phase space
+  ax[2][1].append(ax[2][0].scatter(sY, sPy,
+    s=1, facecolor='0', cmap=gc, lw=0,hatch=''))
+  ax[2][0].set_xlim(sY.min(),sY.max())
+  ax[2][0].set_ylim(sPy.min(),sPy.max())
+  ax[2][0].set_title("$\epsilon_y={0:.3}\ \mathrm{{\pi\ mm\ mrad}}"
+    "\ \epsilon_{{n,y}}={1:.3}\ \mathrm{{\pi\ mm\ mrad}}$".format(temit,temit*nfac))
+  ax[2][0].set_xlabel("$y\ (\mathrm{m})$")
+  ax[2][0].set_ylabel("$p_y\ (\mathrm{MeV})$")
+
+# save plot and close
+  plt.savefig('traj_select_{0}.png'.format(fieldFile),format='png')#,dpi=300)
+  plt.close()
+
+  idlist = selected[:,0]
+
+  print(idlist)
+
+  sdfList = [f for f in os.listdir(os.getcwd()) if re.match('^[0-9]{4}\.sdf$',f)]
+
+  sdfList.sort()
+
+  for sdfFile in sdfList:
+    timeprint("Grabbing from {0}...".format(sdfFile))
+    try:
+      partdata = sdf.SDF(sdfFile).read()
+      partID = partdata['Particles/ID/{0}'.format(args.species)]
+      debug('loaded partX')
+      partX = partdata['Grid/Particles/{0}/X'.format(args.species)]
+      debug('loaded partX')
+      partY = partdata['Grid/Particles/{0}/Y'.format(args.species)]
+      debug('loaded partY')
+      partPx = partdata['Particles/Px/{0}'.format(args.species)]
+      debug('loaded partPx')
+      partPy = partdata['Particles/Py/{0}'.format(args.species)]
+      debug('loaded partPy')
+      partPz = partdata['Particles/Pz/{0}'.format(args.species)]
+      debug('loaded partPz')
+      partW = partdata['Particles/Weight/{0}'.format(args.species)]
+      debug('loaded partW')
+    except Exception as err:
+      print(err)
+      print("Problem analyzing {0}, file corrupted or missing data".format(partFile))
+      continue 
+    
+    partarray = np.column_stack((partID,partX,partY,partPx,partPy,partPz,partW))
+
+    selected = partarray[np.where(np.in1d(partarray[:,0], idlist))]
+
+    print(selected.shape)
+
+    pname = "part_{0}.pickle".format(sdfFile[:-4])
+
+    with open(pname, 'wb') as pfile:
+
+      pickle.dump(selected,pfile)
+    
+
+  timeprint("script complete")
+   
+
+if __name__ == '__main__':
+  main()

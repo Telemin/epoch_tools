@@ -1,0 +1,73 @@
+#!/usr/bin/env python
+# vim: set fileencoding=UTF-8
+
+import matplotlib
+matplotlib.use('Agg')  
+from matplotlib.colors import LogNorm
+from mpl_toolkits.axes_grid1 import make_axes_locatable
+import matplotlib.pyplot as plt
+import numpy as np
+import sdf
+import multiprocessing as mp
+import os
+import shutil
+from distutils import spawn
+
+def main():
+
+  try:
+    shutil.rmtree('dens_lineout_avg')
+  except:
+    pass
+  try:
+    os.mkdir('dens_lineout_avg')
+  except:
+    print('Problem creating movie directory, check perms?')
+    exit()
+  sdf_list = [f for f in os.listdir(os.getcwd()) if f.endswith('.sdf')]
+  worker_pool = mp.Pool(processes=mp.cpu_count())
+  worker_pool.map(mkimage, sdf_list)
+  if spawn.find_executable('avconv'):
+    converter = spawn.find_executable('avconv')
+  elif spawn.find_executable('ffmpeg'):
+    converter = spawn.find_executable('ffmpeg')
+  else:
+    print("Couldn't find ffmpeg/avconv :(\n"
+          "you're on your own for making the movie")
+    os.exit(1)
+
+  conv_args = [converter,'-r', '1', '-i', 'dens_lineout_avg/%04d.png', '-c:v', 'libx264',
+              '-r', '30', '-pix_fmt', 'yuv420p','-y', 
+              ''.join((os.path.basename(os.getcwd()),'.mp4'))]
+  spawn.spawn(conv_args)
+
+def mkimage(filename):
+
+  try:
+    filedata = sdf.SDF(filename).read()
+    x = filedata['Grid/Grid/X']
+    y = filedata['Grid/Grid/Y']
+    dens = filedata['Derived/Number_Density/electron']
+  except:
+    "{}: file missing required data".format(filename)
+    return
+  
+  yrange = 5e-6
+
+  ymin = np.searchsorted(y,-yrange,side='left')
+  ymax = np.searchsorted(y,yrange,side='right')
+
+  densAvg = dens[:,ymin:ymax].sum(axis=1)/(ymax-ymin)
+
+  fig = plt.figure(figsize=(8,8))
+  ax = [plt.subplot2grid((2,1),(0,0)), plt.subplot2grid((2,1),(1,0))]
+  im = [ax[0].imshow(np.rot90(dens), extent=[x.min(), x.max(),y.min(),y.max()],
+    aspect='auto'), ax[1].plot(x,densAvg)]
+  ax[0].set_xlim([x.min(),x.max()])
+  savepath = os.path.join('dens_lineout_avg',(filename[:-4]))
+  print(savepath)
+  plt.savefig(savepath)
+  plt.close()
+  
+if __name__ == '__main__':
+  main()
