@@ -69,7 +69,7 @@ def check_file_in_use(filename):
 
   for proc in psutil.process_iter():
     try:
-      flist = proc.get_open_files()
+      flist = proc.open_files()
       if flist:
         for fh in flist:
           if fh.path == filepath:
