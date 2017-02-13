@@ -119,6 +119,8 @@ def main():
     ax2.plot(results[:,0], results[:,2],color='green')
     ax2.set_ylim(0.8,1.0)
 
+    print("beta_max: {}".format(np.max(results[:,2])))
+
     fig.savefig('a0.png')
    
     
