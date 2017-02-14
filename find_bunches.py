@@ -87,6 +87,20 @@ def main():
         print("Exiting....")
         return(-1)
 
+    #load sdf data (needs to be done before we can sanity check input)
+    sdf_e_px = getattr_from_any(sdf_handles, 'Particles_Px_electron').data
+    sdf_e_x = getattr_from_any(sdf_handles, 'Grid_Particles_electron').data[0]
+    sdf_e_y = getattr_from_any(sdf_handles, 'Grid_Particles_electron').data[1]
+    sdf_e_w = getattr_from_any(sdf_handles, 'Particles_Weight_electron').data
+    sdf_gridx = getattr_from_any(sdf_handles, 'Grid_Grid').data[0]
+    sdf_gridy = getattr_from_any(sdf_handles, 'Grid_Grid').data[1]
+    sdf_dens = getattr_from_any(sdf_handles, 'Derived_Number_Density_electron').data
+    try:
+        sdf_gridz = getattr_from_any(sdf_handles, 'Grid_Grid').data[2]
+        sdf_e_z = getattr_from_any(sdf_handles, 'Grid_Particles_electron').data[2]
+        is3d = True
+    except:
+        is3d = False
 
     grids =  {'xgrid':None
                 ,'ygrid':None
@@ -107,16 +121,18 @@ def main():
               "gridsize will take precedence")
 
     if ((grids['xgrid'] is None and grids['xbins'] is None) or
-       (grids['ygrid'] is None and grids['ybins'] is None) or
-       (grids['zgrid'] is None and grids['zbins'] is None)):
+       (grids['ygrid'] is None and grids['ybins'] is None)):
         print("Warning no gridsize or numbins specified, defaulting to "
               "100 bins")
         if grids['xbins'] is None:
             grids['xbins'] = 100
         if grids['ybins'] is None:
             grids['ybins'] = 100
-        if grids['zbins'] is None:
-            grids['zbins'] = 100
+    
+    if is3d and (grids['zgrid'] is None and grids['zbins'] is None):
+        print("Warning no gridsize or numbins specified, defaulting to "
+              "100 bins")
+        grids['zbins'] = 100
     
     try:
         output_name = config['output_name']
@@ -128,22 +144,25 @@ def main():
     except:
         output_path = '.'
 
-    cutoff_px = float(config['cutoff_px']) * sc.m_e * sc.c
-     
-    #load sdf data (needs to be done before we can sanity check input)
-    sdf_e_px = getattr_from_any(sdf_handles, 'Particles_Px_electron').data
-    sdf_e_x = getattr_from_any(sdf_handles, 'Grid_Particles_electron').data[0]
-    sdf_e_y = getattr_from_any(sdf_handles, 'Grid_Particles_electron').data[1]
-    sdf_e_w = getattr_from_any(sdf_handles, 'Particles_Weight_electron').data
-    sdf_gridx = getattr_from_any(sdf_handles, 'Grid_Grid').data[0]
-    sdf_gridy = getattr_from_any(sdf_handles, 'Grid_Grid').data[1]
-    sdf_dens = getattr_from_any(sdf_handles, 'Derived_Number_Density_electron').data
     try:
-        sdf_gridz = getattr_from_any(sdf_handles, 'Grid_Grid').data[2]
-        sdf_e_z = getattr_from_any(sdf_handles, 'Grid_Particles_electron').data[2]
-        is3d = True
+        pub_xmin = float(config['pub_xmin'])
     except:
-        is3d = False
+        pub_xmin = None
+    try:
+        pub_xmax = float(config['pub_xmax'])
+    except:
+        pub_xmax = None
+    try:
+        pub_ymin = float(config['pub_ymin'])
+    except:
+        pub_ymin = None
+    try:
+        pub_ymax = float(config['pub_ymax'])
+    except:
+        pub_ymax = None
+    
+
+    cutoff_px = float(config['cutoff_px']) * sc.m_e * sc.c
 
     extents = {'xmin':sdf_e_x.min()
              ,'xmax':sdf_e_x.max()
@@ -165,8 +184,9 @@ def main():
         limits['xmin'], limits['xmax'] = limits['xmax'], limits['xmin'] 
     if limits['ymax'] < limits['ymin']:
         limits['ymin'], limits['ymax'] = limits['ymax'], limits['ymin'] 
-    if limits['zmax'] < limits['zmin']:
-        limits['zmin'], limits['zmax'] = limits['zmax'], limits['zmin'] 
+    if is3d:
+        if limits['zmax'] < limits['zmin']:
+            limits['zmin'], limits['zmax'] = limits['zmax'], limits['zmin'] 
 
     for extent in limits:
         if extent.endswith('max'):
@@ -402,14 +422,16 @@ def main():
         print("Bunch pos stdev(z): {}".format(z_stdev))
         print()
 
-    unscaled_charge = np.sum(counts3d)*sc.e
     if not is3d:
+        unscaled_charge = np.sum(counts2d_xy)*sc.e
         print("Unscaled charge: {}".format(unscaled_charge))
-        bunch_charge_rad = np.sum(np.abs(ym)*counts)*np.pi*sc.e
-        bunch_charge_dep = unscaled_charge*bunch_width*sc.e
+        xm, ym, = np.meshgrid(bin_ctr_x, bin_ctr_y, indexing='ij')
+        bunch_charge_rad = np.sum(np.abs(ym)*counts2d_xy)*np.pi*sc.e
+        bunch_charge_dep = unscaled_charge*fw10m_y
         print("Total charge(rad): {:03g}pc".format(bunch_charge_rad*1e12))
         print("Total charge(depth): {:03g}pc".format(bunch_charge_dep*1e12))
     else:
+        unscaled_charge = np.sum(counts3d)*sc.e
         print("Total charge: {:03g}pc".format(unscaled_charge*1e12))
 
 
@@ -433,22 +455,22 @@ def main():
                                   ,fill=True
                                   ,fc='blue'
                                   ,alpha=0.2))
+    if is3d:
+        ax2 = fig.add_subplot(334)
+        ax2.imshow(plot_dens_xz.T
+                 ,aspect='auto'
+                 ,extent=display_limits
+                 ,origin='upper'
+                 ,norm=mc.LogNorm(1e23,1e26)
+                 ,cmap=mcm.plasma)
 
-    ax2 = fig.add_subplot(334)
-    ax2.imshow(plot_dens_xz.T
-             ,aspect='auto'
-             ,extent=display_limits
-             ,origin='upper'
-             ,norm=mc.LogNorm(1e23,1e26)
-             ,cmap=mcm.plasma)
-
-    if None not in ell.values():
-        ax2.add_patch(mpat.Ellipse((ell['centerx']*1e6,ell['centery']*1e6)
-                                  ,2*ell['radx']*1e6
-                                  ,2*ell['radz']*1e6
-                                  ,fill=True
-                                  ,fc='blue'
-                                  ,alpha=0.2))
+        if None not in ell.values():
+            ax2.add_patch(mpat.Ellipse((ell['centerx']*1e6,ell['centery']*1e6)
+                                      ,2*ell['radx']*1e6
+                                      ,2*ell['radz']*1e6
+                                      ,fill=True
+                                      ,fc='blue'
+                                      ,alpha=0.2))
 
 
     ax3 = fig.add_subplot(332)
@@ -565,7 +587,7 @@ def main():
 
     # Bunch Charge
     if is3d:
-        props_string = r'\noindent$Q = {:.3}\ \mathrm{{pC}}$\\ \\'.format(unscaled_charge*1e23)
+        props_string = r'\noindent$Q = {:.3}\ \mathrm{{pC}}$\\ \\'.format(unscaled_charge*1e12)
     else:   
         props_string = ''.join(
             [r'$dQ = {:.3}\ \mathrm{{\mu C/m}}$\\'.format(unscaled_charge*1e6)
@@ -606,7 +628,7 @@ def main():
     ax1cbloc=[0.09,0.8,0.37,0.05] 
     ax2cbloc=[0.59,0.8,0.37,0.05] 
     ax1norm=mc.LogNorm(1e23,1e26)
-    ax2norm=mc.LogNorm(1,100)
+
 
     mpl.rcParams.update({'font.size': 8})
     fig = mf.Figure(figsize=(3.2,2))
@@ -633,17 +655,29 @@ def main():
     ax.yaxis.set_major_locator(mt.LinearLocator(3))
 
     ax.set_xlabel(r'$z\ \mathrm{(\mu m)}$', labelpad=0)
-    ax.set_ylabel(r'$y \mathrm{(\mu m)}$', labelpad=-8)
+    ax.set_ylabel(r'$y \mathrm{(\mu m)}$', labelpad=-5)
 
     ax2 = fig.add_axes(ax2loc)
     counts, xbins, patches = ax2.hist(bunch_electron_x*1e6
                                      ,bins=xbins*1e6
                                      ,weights=bunch_electron_w*sc.e*1e12
                                      ,linewidth=0)
+    
+    cnz = counts[np.nonzero(counts)]
+    pnz = np.asarray(patches)[np.nonzero(counts)]
+    try:
+        ax2nmax = float(config['pub_cmax'])
+    except:
+        ax2nmax = np.power(10,np.ceil(np.log10(cnz.max()))) 
+    try:
+        ax2nmin = float(config['pub_cmin'])
+    except:
+        ax2nmin = np.power(10,np.floor(np.log10(cnz.min())))
 
-    for count, patch in zip(counts,patches):
-        if count > 1:
-            patch.set_facecolor(mcm.plasma(ax2norm(count))) 
+    ax2norm = mc.LogNorm(ax2nmin, ax2nmax)
+
+    for count, patch in zip(cnz,pnz):
+        patch.set_facecolor(mcm.plasma(ax2norm(count))) 
     
     ax2cba = fig.add_axes(ax2cbloc)
     ax2cb = mplcb.ColorbarBase(ax2cba
@@ -655,17 +689,18 @@ def main():
     ax2cba.xaxis.set_label_position('top')
     ax2cb.set_label(r"$\mathrm{d}Q/\mathrm{d}z\ \mathrm{nC/m}$", labelpad=-4)
 
-    #ax2.set_xlim(*display_limits[:2])
-    #ax2.set_ylim(0,ax2norm.vmax)
+    try: pub_xmin *= 1e6
+    except: pass
+    try: pub_xmax *= 1e6
+    except: pass
+    ax2.set_xlim(pub_xmin,pub_xmax)
+    ax2.set_ylim(pub_ymin, pub_ymax)
 
     ax2.xaxis.set_major_locator(mt.LinearLocator(3))
     ax2.yaxis.set_major_locator(mt.LinearLocator(3))
     
     ax2.set_xlabel(r'$z\ \mathrm{(\mu m)}$',labelpad=0)
-    ax2.set_ylabel(r'$\mathrm{d}Q/\mathrm{d}x\ \mathrm{(nC/m)}$',labelpad=-2)
-    ax2.text(0.05,0.85,'$dQ = {:.3}\mathrm{{\mu C/m}}$'.format(unscaled_charge*1e6)
-           ,transform=ax2.transAxes
-           )
+    ax2.set_ylabel(r'$\mathrm{d}Q/\mathrm{d}z\ \mathrm{(nC/m)}$',labelpad=0)
 
     try:
         fig.text(0.05,0.94,'{}'.format(config['title'])
