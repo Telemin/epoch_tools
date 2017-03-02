@@ -13,6 +13,8 @@ import matplotlib.backends.backend_agg as mplbea
 import matplotlib.cm as mcm
 import matplotlib.colors as mc
 
+import multiprocessing as mp
+
 from pyutils.funchelpers import TextProgress
 
 import re
@@ -107,7 +109,14 @@ def main():
 
     print("Acting on {} sdf files".format(len(sdf_files)))
 
-    results = np.asarray(list(map(sdf_getdata, TextProgress(sdf_files))))
+    if 'parallel' in config:
+        with mp.Pool() as worker_pool:
+            results = np.asarray([i for i in TextProgress(worker_pool.imap(sdf_getdata, sdf_files)
+                                              ,length=len(sdf_files))])
+            worker_pool.close()
+            worker_pool.join()
+    else:
+        results = np.asarray(list(map(sdf_getdata, TextProgress(sdf_files))))
 
     results[:,1] = results[:,1] * sc.e/(sc.m_e * sc.c * las_omega)
     beta_max = np.max(results[:,2])
