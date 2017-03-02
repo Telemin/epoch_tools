@@ -121,6 +121,7 @@ def main():
     else:
         results = np.asarray(list(map(sdf_getdata, TextProgress(sdf_files))))
 
+    results = results[np.argsort(results[:,0])]
     results[:,1] = results[:,1] * sc.e/(sc.m_e * sc.c * las_omega)
     beta_max = np.max(results[:,2])
     print("beta_max: {}".format(beta_max))
