@@ -68,7 +68,6 @@ def sdf_getdata(sdf_file):
                       getattr(sdf_handle, "Particles_Gamma_electron").data)
         bmax = bmax / (sc.m_e * sc.c)
     except Exception as err:
-        print("Warning: Missing electron data in {}".format(sdf_file))
         bmax = np.nan
 
     return((x,eymax,bmax))
@@ -110,7 +109,11 @@ def main():
     print("Acting on {} sdf files".format(len(sdf_files)))
 
     if 'parallel' in config:
-        with mp.Pool() as worker_pool:
+        try:
+            threads = int(config['parallel'])
+        except:
+            threads = mp.cpu_count()
+        with mp.Pool(threads) as worker_pool:
             results = np.asarray([i for i in TextProgress(worker_pool.imap(sdf_getdata, sdf_files)
                                               ,length=len(sdf_files))])
             worker_pool.close()
