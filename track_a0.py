@@ -13,6 +13,8 @@ import matplotlib.backends.backend_agg as mplbea
 import matplotlib.cm as mcm
 import matplotlib.colors as mc
 
+from pyutils.funchelpers import TextProgress
+
 import re
 import configobj
 import functools
@@ -49,7 +51,7 @@ def sdf_getdata(sdf_file):
     try:
         sdf_handle = sdf.read(sdf_file)
     except Exception as err:
-        print(err)
+        print("Warning: Unreadable sdf file {}".format(sdf_file))
         return((np.nan,np.nan,np.nan))
     try:
         ey = getattr(sdf_handle, "Electric_Field_Ey").data
@@ -57,14 +59,14 @@ def sdf_getdata(sdf_file):
         eyargmax = np.unravel_index(np.argmax(ey), ey.shape)[0]
         x = getattr(sdf_handle, "Grid_Grid").data[0][eyargmax]
     except:
-        print(err)
+        print("Warning: Missing field data in {}".format(sdf_file))
         return((np.nan,np.nan,np.nan))
     try: 
         bmax = np.max(getattr(sdf_handle, "Particles_Px_electron").data /
                       getattr(sdf_handle, "Particles_Gamma_electron").data)
         bmax = bmax / (sc.m_e * sc.c)
     except Exception as err:
-        print(err)
+        print("Warning: Missing electron data in {}".format(sdf_file))
         bmax = np.nan
 
     return((x,eymax,bmax))
@@ -88,8 +90,6 @@ def main():
     except:
         print("No laser_omega/laser_lambda specified. Fatal. Quitting...")
         return(-1)
-    
-    print("{:.3e}".format(las_omega))
 
     try:
         sdf_regex = re.compile(config['sdf_regex'].strip())
@@ -107,9 +107,11 @@ def main():
 
     print("Acting on {} sdf files".format(len(sdf_files)))
 
-    results = np.asarray(list(map(sdf_getdata, sdf_files)))
+    results = np.asarray(list(map(sdf_getdata, TextProgress(sdf_files))))
 
     results[:,1] = results[:,1] * sc.e/(sc.m_e * sc.c * las_omega)
+    beta_max = np.max(results[:,2])
+    print("beta_max: {}".format(beta_max))
 
     fig = mf.Figure(figsize=(4,3))
     canvas = mplbea.FigureCanvasAgg(fig)
@@ -119,7 +121,11 @@ def main():
     ax2.plot(results[:,0], results[:,2],color='green')
     ax2.set_ylim(0.8,1.0)
 
-    print("beta_max: {}".format(np.max(results[:,2])))
+    ax2.text(0.9, 0.2
+            ,r"$\beta_{{max}}={}$".format(beta_max)
+            ,verticalalignment="bottom"
+            ,horizontalalignment="right"
+            ,transform=ax2.transAxes)
 
     fig.savefig('a0.png')
    
