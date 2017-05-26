@@ -887,7 +887,7 @@ def density_image(filename, outputPrefix='', outputDir=''):
         return(None)
     elif os.path.exists(os.path.join(os.getcwd(),''.join((savepath,'.png')))):
         print("{0} already analyzed, skipping".format(filename))
-        return(None)
+        return(savepath)
     else:
         print("Analyzing {0}".format(filename))
 
@@ -986,24 +986,26 @@ def movie_mode():
     else:
         frames = list(map(processor, sdfList))
     if args.movie:
-        newframes = filter(None, frames)
-        if newframes:
-            if spawn.find_exutable('avconv'):
-                converter = spawn.find_exutable('avconv')
-            elif spawn.find_exutable('ffmpeg'):
-                converter = spawn.find_exutable('ffmpeg')
+        valid_frames = list(filter(None, frames))
+        if valid_frames:
+            if spawn.find_executable('avconv'):
+                converter = spawn.find_executable('avconv')
+            elif spawn.find_executable('ffmpeg'):
+                converter = spawn.find_executable('ffmpeg')
             else:
                 print("Couldn't find ffmpeg/avconv :(\n"
                             "you're on your own for making the movie")
                 sys.exit(1)
 
+            frame_prefix = valid_frames[0][:-4]
             conv_args = [converter,'-r', '{}'.format(args.framerate), '-i',
-                '{0}/{1}%04d.png'.format(output,prefix), '-c:v', 'libx264', '-r', '25',
-                '-pix_fmt', 'yuv420p','-y', 
-                ''.join((os.path.basename(os.getcwd()),'_{0}.mp4'.format(output)))]
+                '{0}%04d.png'.format(frame_prefix), '-c:v', 'libvpx-vp9',
+                '-crf', '20', '-b:v', '0', '-r', '25', '-pix_fmt',
+                'yuv420p','-y',
+                ''.join((os.path.basename(os.getcwd()),'{0}_{1}.mkv'.format(prefix,output)))]
             spawn.spawn(conv_args)
         else:
-            print("No new files, skipping movie creation")
+            print("No valid files, skipping movie creation")
 
 
 def single_mode():

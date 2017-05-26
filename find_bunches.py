@@ -3,6 +3,7 @@
 import sdf
 import sys
 import os
+import copy
 import numpy as np
 import scipy.constants as sc
 import configobj
@@ -15,6 +16,7 @@ import matplotlib.cm as mcm
 import matplotlib.colorbar as mplcb
 import matplotlib.colors as mc
 import matplotlib.ticker as mt
+import mpl_toolkits.axes_grid1.inset_locator as mil
 
 import warnings
 
@@ -145,11 +147,11 @@ def main():
         output_path = '.'
 
     try:
-        pub_xmin = float(config['pub_xmin'])
+        pub_xmin = float(config['pub_xmin'])*1e6
     except:
         pub_xmin = None
     try:
-        pub_xmax = float(config['pub_xmax'])
+        pub_xmax = float(config['pub_xmax'])*1e6
     except:
         pub_xmax = None
     try:
@@ -160,8 +162,33 @@ def main():
         pub_ymax = float(config['pub_ymax'])
     except:
         pub_ymax = None
-    
 
+    reset_origin = False
+    if 'reset_origin' in config:
+        if not 'false'.startswith(config['reset_origin'].lower()):
+            reset_origin = True
+
+    lineout_inset = False
+    if 'lineout_inset' in config:
+        if not 'false'.startswith(config['lineout_inset'].lower()):
+            lineout_inset = True
+    try:
+        lineout_xmin = float(config['lineout_xmin'])*1e6
+    except:
+        lineout_xmin = None
+    try:
+        lineout_xmax = float(config['lineout_xmax'])*1e6
+    except:
+        lineout_xmax = None
+    try:
+        lineout_ymin = float(config['lineout_ymin'])
+    except:
+        lineout_ymin = None
+    try:
+        lineout_ymax = float(config['lineout_ymax'])
+    except:
+        lineout_ymax = None
+ 
     cutoff_px = float(config['cutoff_px']) * sc.m_e * sc.c
 
     extents = {'xmin':sdf_e_x.min()
@@ -211,22 +238,30 @@ def main():
         except:
             pass
     if None not in ell.values():
+        ellipse_sane = True
+
         if ((ell['centerx'] + ell['radx'] < limits['xmin']) 
-           or (ell['centerx'] - ell['radx'] > limits['xmax'])
-           or (ell['centery'] + ell['rady'] < limits['ymin']) 
-           or (ell['centery'] - ell['rady'] > limits['ymax'])
-           or (ell['centerz'] + ell['radz'] < limits['zmin']) 
-           or (ell['centerz'] - ell['radz'] > limits['zmax'])):
+        or (ell['centerx'] - ell['radx'] > limits['xmax'])
+        or (ell['centery'] + ell['rady'] < limits['ymin']) 
+        or (ell['centery'] - ell['rady'] > limits['ymax'])):
             print("Error, ellipse is entirely outside of view window")
             return(-1)
         if ((ell['centerx'] - ell['radx'] < limits['xmin']) 
-           or (ell['centerx'] + ell['radx'] > limits['xmax'])
-           or (ell['centery'] - ell['rady'] < limits['ymin']) 
-           or (ell['centery'] + ell['rady'] > limits['ymax'])
-           or (ell['centerz'] - ell['radz'] < limits['zmin']) 
-           or (ell['centerz'] + ell['radz'] > limits['zmax'])):
+        or (ell['centerx'] + ell['radx'] > limits['xmax'])
+        or (ell['centery'] - ell['rady'] < limits['ymin']) 
+        or (ell['centery'] + ell['rady'] > limits['ymax'])):
             print("Warning, ellipse is clipped by view window")
-        ellipse_sane = True
+
+        if is3d:
+            if ((ell['centerz'] + ell['radz'] < limits['zmin']) 
+            or (ell['centerz'] - ell['radz'] > limits['zmax'])):
+                print("Error, ellipse is entirely outside of view window")
+                return(-1)
+            if ((ell['centerz'] - ell['radz'] < limits['zmin']) 
+            or (ell['centerz'] + ell['radz'] > limits['zmax'])):
+                print("Warning, ellipse is clipped by view window")
+                
+
 
     #trim grid data to specfied limits
     xargmin = np.argmin(np.abs(sdf_gridx - limits['xmin']))
@@ -368,6 +403,8 @@ def main():
 
 ### Statistical Calculations
 
+    fwnm_lim = 100
+
     bin_w_x = np.diff(histedges[0])
     bin_ctr_x = histedges[0][:-1] + bin_w_x 
     bin_w_y = np.diff(histedges[1])
@@ -378,47 +415,48 @@ def main():
 
     nx_rms = bin_ctr_x[np.where(counts1d_x > counts1d_x.max()/np.e)]
     nx_fwhm = bin_ctr_x[np.where(counts1d_x > counts1d_x.max()/2)]
-    nx_fw10m = bin_ctr_x[np.where(counts1d_x > counts1d_x.max()/100)]
+    nx_fwnm = bin_ctr_x[np.where(counts1d_x > counts1d_x.max()/fwnm_lim)]
     rms_x = nx_rms.max() - nx_rms.min()
     fwhm_x = nx_fwhm.max() - nx_fwhm.min() 
-    fw10m_x = nx_fw10m.max() - nx_fw10m.min() 
+    fwnm_x = nx_fwnm.max() - nx_fwnm.min() 
     x_avg = np.average(bunch_electron_x, weights=bunch_electron_w)
     x_vari = np.average((bunch_electron_x - x_avg)**2, weights=bunch_electron_w)
     x_stdev = np.sqrt(x_vari)
+    print("X-avg: {}".format(x_avg))
     print("Bunch RMS(x): {}".format(rms_x))
     print("Bunch FWHM(x): {}".format(fwhm_x))
-    print("Bunch FW10M(x): {}".format(fw10m_x))
+    print("Bunch FW{}M(x): {}".format(fwnm_lim,fwnm_x))
     print("Bunch pos stdev(x): {}".format(x_stdev))
     print()
 
     ny_rms = bin_ctr_y[np.where(counts1d_y > counts1d_y.max()/np.e)]
     ny_fwhm = bin_ctr_y[np.where(counts1d_y > counts1d_y.max()/2)]
-    ny_fw10m = bin_ctr_y[np.where(counts1d_y > counts1d_y.max()/100)]
+    ny_fwnm = bin_ctr_y[np.where(counts1d_y > counts1d_y.max()/fwnm_lim)]
     rms_y = ny_rms.max() - ny_rms.min()
     fwhm_y = ny_fwhm.max() - ny_fwhm.min() 
-    fw10m_y = ny_fw10m.max() - ny_fw10m.min() 
+    fwnm_y = ny_fwnm.max() - ny_fwnm.min() 
     y_avg = np.average(bunch_electron_y, weights=bunch_electron_w)
     y_vari = np.average((bunch_electron_y - y_avg)**2, weights=bunch_electron_w)
     y_stdev = np.sqrt(y_vari)
     print("Bunch RMS(y): {}".format(rms_y))
     print("Bunch FWHM(y): {}".format(fwhm_y))
-    print("Bunch FW10M(y): {}".format(fw10m_y))
+    print("Bunch FW{}M(y): {}".format(fwnm_lim,fwnm_y))
     print("Bunch pos stdev(y): {}".format(y_stdev))
     print()
 
     if is3d:
         nz_rms = bin_ctr_z[np.where(counts1d_z > counts1d_z.max()/np.e)]
         nz_fwhm = bin_ctr_z[np.where(counts1d_z > counts1d_z.max()/2)]
-        nz_fw10m = bin_ctr_z[np.where(counts1d_z > counts1d_z.max()/100)]
+        nz_fwnm = bin_ctr_z[np.where(counts1d_z > counts1d_z.max()/fwnm_lim)]
         rms_z = nz_rms.max() - nz_rms.min()
         fwhm_z = nz_fwhm.max() - nz_fwhm.min() 
-        fw10m_z = nz_fw10m.max() - nz_fw10m.min() 
+        fwnm_z = nz_fwnm.max() - nz_fwnm.min() 
         z_avg = np.average(bunch_electron_z, weights=bunch_electron_w)
         z_vari = np.average((bunch_electron_z - z_avg)**2, weights=bunch_electron_w)
         z_stdev = np.sqrt(z_vari)
         print("Bunch RMS(z): {}".format(rms_z))
         print("Bunch FWHM(z): {}".format(fwhm_z))
-        print("Bunch FW10M(z): {}".format(fw10m_z))
+        print("Bunch FW{}M(z): {}".format(fwnm_lim,fwnm_z))
         print("Bunch pos stdev(z): {}".format(z_stdev))
         print()
 
@@ -427,7 +465,7 @@ def main():
         print("Unscaled charge: {}".format(unscaled_charge))
         xm, ym, = np.meshgrid(bin_ctr_x, bin_ctr_y, indexing='ij')
         bunch_charge_rad = np.sum(np.abs(ym)*counts2d_xy)*np.pi*sc.e
-        bunch_charge_dep = unscaled_charge*fw10m_y
+        bunch_charge_dep = unscaled_charge*fwnm_y
         print("Total charge(rad): {:03g}pc".format(bunch_charge_rad*1e12))
         print("Total charge(depth): {:03g}pc".format(bunch_charge_dep*1e12))
     else:
@@ -447,6 +485,7 @@ def main():
              ,origin='upper'
              ,norm=mc.LogNorm(1e23,1e26)
              ,cmap=mcm.plasma)
+    ax1.xaxis.set_major_locator(mt.LinearLocator(5))
 
     if None not in ell.values():
         ax1.add_patch(mpat.Ellipse((ell['centerx']*1e6,ell['centery']*1e6)
@@ -463,6 +502,7 @@ def main():
                  ,origin='upper'
                  ,norm=mc.LogNorm(1e23,1e26)
                  ,cmap=mcm.plasma)
+        ax2.xaxis.set_major_locator(mt.LinearLocator(5))
 
         if None not in ell.values():
             ax2.add_patch(mpat.Ellipse((ell['centerx']*1e6,ell['centery']*1e6)
@@ -481,6 +521,7 @@ def main():
              ,norm=mc.LogNorm(np.ma.masked_equal(hist_dens2d_xy,0,copy=False).min()
                           ,np.ma.masked_equal(hist_dens2d_xy,0,copy=False).max())
              ,cmap=mcm.plasma)
+    ax3.xaxis.set_major_locator(mt.LinearLocator(5))
 
     if is3d:
         ax4 = fig.add_subplot(335)
@@ -491,6 +532,7 @@ def main():
                  ,norm=mc.LogNorm(np.ma.masked_equal(hist_dens2d_xz,0,copy=False).min()
                               ,np.ma.masked_equal(hist_dens2d_xz,0,copy=False).max())
                  ,cmap=mcm.plasma)
+        ax4.xaxis.set_major_locator(mt.LinearLocator(5))
 
     # Charge x-distribution    
     ax5 = fig.add_subplot(337)
@@ -510,13 +552,13 @@ def main():
     ax5.axvline(nx_rms.max()*1e6,alpha=0.5, color='red')
     ax5.axvline(nx_fwhm.min()*1e6,alpha=0.5, color='green')
     ax5.axvline(nx_fwhm.max()*1e6,alpha=0.5, color='green')
-    ax5.axvline(nx_fw10m.min()*1e6,alpha=0.5, color='blue')
-    ax5.axvline(nx_fw10m.max()*1e6,alpha=0.5, color='blue')
+    ax5.axvline(nx_fwnm.min()*1e6,alpha=0.5, color='blue')
+    ax5.axvline(nx_fwnm.max()*1e6,alpha=0.5, color='blue')
     
     #naive attempt to autoscale
-    delta = 0.1*(nx_fw10m.max() - nx_fw10m.min())
-    ax5.set_xlim((nx_fw10m.min()-delta)*1e6
-                ,(nx_fw10m.max()+delta)*1e6)
+    delta = 0.1*(nx_fwnm.max() - nx_fwnm.min())
+    ax5.set_xlim((nx_fwnm.min()-delta)*1e6
+                ,(nx_fwnm.max()+delta)*1e6)
 
     ax5.set_xlabel(r'$z\ \mathrm{(\mu m)}$')
     ax5.set_ylabel(r'$\mathrm{d}Q\ \mathrm{(C m^{-3})}$')
@@ -540,13 +582,13 @@ def main():
     ax6.axvline(ny_rms.max()*1e6,alpha=0.5, color='red')
     ax6.axvline(ny_fwhm.min()*1e6,alpha=0.5, color='green')
     ax6.axvline(ny_fwhm.max()*1e6,alpha=0.5, color='green')
-    ax6.axvline(ny_fw10m.min()*1e6,alpha=0.5, color='blue')
-    ax6.axvline(ny_fw10m.max()*1e6,alpha=0.5, color='blue')
+    ax6.axvline(ny_fwnm.min()*1e6,alpha=0.5, color='blue')
+    ax6.axvline(ny_fwnm.max()*1e6,alpha=0.5, color='blue')
     
     #naive attempt to autoscale
-    delta = 0.1*(ny_fw10m.max() - ny_fw10m.min())
-    ax6.set_xlim((ny_fw10m.min()-delta)*1e6
-                ,(ny_fw10m.max()+delta)*1e6)
+    delta = 0.1*(ny_fwnm.max() - ny_fwnm.min())
+    ax6.set_xlim((ny_fwnm.min()-delta)*1e6
+                ,(ny_fwnm.max()+delta)*1e6)
 
     ax6.set_xlabel(r'$z\ \mathrm{(\mu m)}$')
     ax6.set_ylabel(r'$\mathrm{d}Q\ \mathrm{(C m^{-3})}$')
@@ -570,13 +612,13 @@ def main():
         ax7.axvline(nz_rms.max()*1e6,alpha=0.5, color='red')
         ax7.axvline(nz_fwhm.min()*1e6,alpha=0.5, color='green')
         ax7.axvline(nz_fwhm.max()*1e6,alpha=0.5, color='green')
-        ax7.axvline(nz_fw10m.min()*1e6,alpha=0.5, color='blue')
-        ax7.axvline(nz_fw10m.max()*1e6,alpha=0.5, color='blue')
+        ax7.axvline(nz_fwnm.min()*1e6,alpha=0.5, color='blue')
+        ax7.axvline(nz_fwnm.max()*1e6,alpha=0.5, color='blue')
         
         #naive attempt to autoscale
-        delta = 0.1*(nz_fw10m.max() - nz_fw10m.min())
-        ax7.set_xlim((nz_fw10m.min()-delta)*1e6
-                    ,(nz_fw10m.max()+delta)*1e6)
+        delta = 0.1*(nz_fwnm.max() - nz_fwnm.min())
+        ax7.set_xlim((nz_fwnm.min()-delta)*1e6
+                    ,(nz_fwnm.max()+delta)*1e6)
 
         ax7.set_xlabel(r'$z\ \mathrm{(\mu m)}$')
         ax7.set_ylabel(r'$\mathrm{d}Q\ \mathrm{(C m^{-3})}$')
@@ -590,25 +632,25 @@ def main():
         props_string = r'\noindent$Q = {:.3}\ \mathrm{{pC}}$\\ \\'.format(unscaled_charge*1e12)
     else:   
         props_string = ''.join(
-            [r'$dQ = {:.3}\ \mathrm{{\mu C/m}}$\\'.format(unscaled_charge*1e6)
+            [r'\noindent$dQ = {:.3}\ \mathrm{{\mu C/m}}$\\'.format(unscaled_charge*1e6)
             ,r'$Q_w = {:.3}\ \mathrm{{pC}}$\\'.format(bunch_charge_dep*1e12)
             ,r'$Q_r = {:.3}\ \mathrm{{pC}}$\\ \\'.format(bunch_charge_rad*1e12)])
 
     props_string += ''.join(
        [r'$w_x(RMS) = {:.3}\ \mathrm{{\mu m}}$\\'.format(rms_x*1e6)
        ,r'$w_x(FWHM) = {:.3}\ \mathrm{{\mu m}}$\\'.format(fwhm_x*1e6)
-       ,r'$w_x(FW10M) = {:.3}\ \mathrm{{\mu m}}$\\'.format(fw10m_x*1e6)
+       ,r'$w_x(FW{}M) = {:.3}\ \mathrm{{\mu m}}$\\'.format(fwnm_lim,fwnm_x*1e6)
        ,r'$\sigma_x = {:.3}\ \mathrm{{\mu m}}$\\ \\'.format(x_stdev*1e6)
        ,r'$w_y(RMS) = {:.3}\ \mathrm{{\mu m}}$\\'.format(rms_y*1e6)
        ,r'$w_y(FWHM) = {:.3}\ \mathrm{{\mu m}}$\\'.format(fwhm_y*1e6)
-       ,r'$w_y(FW10M) = {:.3}\ \mathrm{{\mu m}}$\\'.format(fw10m_y*1e6)
+       ,r'$w_y(FW{}M) = {:.3}\ \mathrm{{\mu m}}$\\'.format(fwnm_lim,fwnm_y*1e6)
        ,r'$\sigma_y = {:.3}\ \mathrm{{\mu m}}$\\ \\'.format(y_stdev*1e6)])
 
     if is3d:
         props_string += ''.join(
            [r'$w_z(RMS) = {:.3}\ \mathrm{{\mu m}}$\\'.format(rms_z*1e6)
            ,r'$w_z(FWHM) = {:.3}\ \mathrm{{\mu m}}$\\'.format(fwhm_z*1e6)
-           ,r'$w_z(FW10M) = {:.3}\ \mathrm{{\mu m}}$\\'.format(fw10m_z*1e6)
+           ,r'$w_z(FW{}M) = {:.3}\ \mathrm{{\mu m}}$\\'.format(fwnm_lim,fwnm_z*1e6)
            ,r'$\sigma_z = {:.3}\ \mathrm{{\mu m}}$\\'.format(z_stdev*1e6)])
 
 
@@ -629,6 +671,12 @@ def main():
     ax2cbloc=[0.59,0.8,0.37,0.05] 
     ax1norm=mc.LogNorm(1e23,1e26)
 
+    if reset_origin:
+        origin_offset = display_limits[0]
+        display_limits[0] = 0
+        display_limits[1] -= origin_offset
+    else:
+        origin_offset = 0
 
     mpl.rcParams.update({'font.size': 8})
     fig = mf.Figure(figsize=(3.2,2))
@@ -658,8 +706,8 @@ def main():
     ax.set_ylabel(r'$y \mathrm{(\mu m)}$', labelpad=-5)
 
     ax2 = fig.add_axes(ax2loc)
-    counts, xbins, patches = ax2.hist(bunch_electron_x*1e6
-                                     ,bins=xbins*1e6
+    counts, xbins, patches = ax2.hist(bunch_electron_x*1e6 - origin_offset
+                                     ,bins=xbins*1e6 - origin_offset
                                      ,weights=bunch_electron_w*sc.e*1e12
                                      ,linewidth=0)
     
@@ -679,6 +727,26 @@ def main():
     for count, patch in zip(cnz,pnz):
         patch.set_facecolor(mcm.plasma(ax2norm(count))) 
     
+    if lineout_inset:
+        insax = mil.inset_axes(ax2, width="50%", height="50%", loc=2)
+        iap = insax.get_position()
+        insax.set_position([iap.xmin + 0.05, iap.ymin, iap.width, iap.height])
+        for patch in patches:
+            patch_cpy = copy.copy(patch)
+            patch_cpy.axes = None
+            patch_cpy.figure = None
+            patch_cpy.set_transform(insax.transData)
+            insax.add_patch(patch_cpy)
+        insax.yaxis.set_ticks_position("right")
+        insax.autoscale()
+        insax.set_xlim(lineout_xmin, lineout_xmax)
+        insax.set_ylim(lineout_ymin, lineout_ymax)
+        insax.xaxis.set_major_locator(mt.LinearLocator(2))
+        insax.yaxis.set_major_locator(mt.LinearLocator(2))
+        insax.axes.tick_params(labelsize="small")
+#        [tick.label.set_fontsize(6) for tick in insax.xaxis.get_major_ticks()]
+#        [tick.label.set_fontsize(6) for tick in insax.yaxis.get_major_ticks()]
+
     ax2cba = fig.add_axes(ax2cbloc)
     ax2cb = mplcb.ColorbarBase(ax2cba
                               ,cmap=mcm.plasma
@@ -689,11 +757,7 @@ def main():
     ax2cba.xaxis.set_label_position('top')
     ax2cb.set_label(r"$\mathrm{d}Q/\mathrm{d}z\ \mathrm{nC/m}$", labelpad=-4)
 
-    try: pub_xmin *= 1e6
-    except: pass
-    try: pub_xmax *= 1e6
-    except: pass
-    ax2.set_xlim(pub_xmin,pub_xmax)
+    ax2.set_xlim(pub_xmin, pub_xmax)
     ax2.set_ylim(pub_ymin, pub_ymax)
 
     ax2.xaxis.set_major_locator(mt.LinearLocator(3))
